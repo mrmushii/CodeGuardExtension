@@ -1,31 +1,68 @@
 const API_BASE_URL = "http://localhost:3000";
 
 // --- 1. Listen for Messages from Content Script ---
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "START_EXAM") {
     console.log("📘 Exam started:", message);
 
     // Save all student details
     chrome.storage.local.set({
       studentId: message.studentId,
-      studentName: message.studentName,
+      studentName: message.studentName || "Unknown Student",
       roomId: message.roomId,
     });
 
     // Now that the exam has started, fetch the blacklist
-    fetchBlacklist();
+    fetchBlacklist(message.roomId)
+      .then(() => {
+        sendResponse({ success: true, message: "Exam started successfully" });
+      })
+      .catch((err) => {
+        console.error("Failed to fetch blacklist, but exam started:", err);
+        sendResponse({ success: true, message: "Exam started, but blacklist fetch failed", warning: err.message });
+      });
+
+    // Return true to indicate we will send a response asynchronously
+    return true;
   }
+  
+  // Return false for messages we don't handle
+  return false;
 });
 
 // --- 2. Fetch Blacklist from Backend ---
-async function fetchBlacklist() {
+async function fetchBlacklist(roomId) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/proctoring/blacklist`);
-    const blacklist = await res.json();
+    if (!roomId) {
+      // Try to get roomId from storage if not provided
+      const { roomId: storedRoomId } = await chrome.storage.local.get(["roomId"]);
+      roomId = storedRoomId;
+    }
+    
+    if (!roomId) {
+      throw new Error("Room ID is required to fetch blacklist");
+    }
+
+    const res = await fetch(`${API_BASE_URL}/api/proctoring/blacklist?roomId=${encodeURIComponent(roomId)}`);
+    
+    if (!res.ok) {
+      throw new Error(`Failed to fetch blacklist: ${res.status} ${res.statusText}`);
+    }
+    
+    const result = await res.json();
+    
+    // Check if the API returned an error
+    if (result.success === false) {
+      throw new Error(result.message || "Failed to fetch blacklist");
+    }
+    
+    // Store the blacklist (assuming result contains the blacklist array or has a blacklist property)
+    const blacklist = result.blacklist || result.data || result;
     chrome.storage.local.set({ blacklist });
     console.log("✅ Blacklist loaded:", blacklist);
   } catch (err) {
     console.error("❌ Failed to fetch blacklist:", err);
+    throw err; // Re-throw so the caller can handle it
   }
 }
 
