@@ -12,14 +12,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       roomId: message.roomId,
     });
 
-    // Now that the exam has started, fetch the blacklist
-    fetchBlacklist(message.roomId)
+    // Now that the exam has started, fetch the whitelist
+    fetchWhitelist(message.roomId)
       .then(() => {
         sendResponse({ success: true, message: "Exam started successfully" });
       })
       .catch((err) => {
-        console.error("Failed to fetch blacklist, but exam started:", err);
-        sendResponse({ success: true, message: "Exam started, but blacklist fetch failed", warning: err.message });
+        console.error("Failed to fetch whitelist, but exam started:", err);
+        sendResponse({ success: true, message: "Exam started, but whitelist fetch failed", warning: err.message });
       });
 
     // Return true to indicate we will send a response asynchronously
@@ -30,8 +30,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-// --- 2. Fetch Blacklist from Backend ---
-async function fetchBlacklist(roomId) {
+// --- 2. Fetch Whitelist from Backend ---
+async function fetchWhitelist(roomId) {
   try {
     if (!roomId) {
       // Try to get roomId from storage if not provided
@@ -40,52 +40,88 @@ async function fetchBlacklist(roomId) {
     }
     
     if (!roomId) {
-      throw new Error("Room ID is required to fetch blacklist");
+      throw new Error("Room ID is required to fetch whitelist");
     }
 
-    const res = await fetch(`${API_BASE_URL}/api/proctoring/blacklist?roomId=${encodeURIComponent(roomId)}`);
+    const res = await fetch(`${API_BASE_URL}/api/proctoring/whitelist?roomId=${encodeURIComponent(roomId)}`);
     
     if (!res.ok) {
-      throw new Error(`Failed to fetch blacklist: ${res.status} ${res.statusText}`);
+      throw new Error(`Failed to fetch whitelist: ${res.status} ${res.statusText}`);
     }
     
     const result = await res.json();
     
     // Check if the API returned an error
     if (result.success === false) {
-      throw new Error(result.message || "Failed to fetch blacklist");
+      throw new Error(result.message || "Failed to fetch whitelist");
     }
     
-    // Store the blacklist (assuming result contains the blacklist array or has a blacklist property)
-    const blacklist = result.blacklist || result.data || result;
-    chrome.storage.local.set({ blacklist });
-    console.log("✅ Blacklist loaded:", blacklist);
+    // Store the whitelist (assuming result contains the whitelist array or has a whitelist property)
+    // Merge with default allowed domains (Google, YouTube, Gmail, etc.)
+    const backendWhitelist = result.whitelist || result.data || result;
+    const defaultWhitelist = [
+      "google.com",
+      "google.co.in",
+      "youtube.com",
+      "gmail.com",
+      "mail.google.com",
+      "drive.google.com",
+      "docs.google.com",
+      "classroom.google.com",
+      "accounts.google.com"
+    ];
+    
+    // Combine backend whitelist with default whitelist, removing duplicates
+    const whitelist = [...new Set([...defaultWhitelist, ...(Array.isArray(backendWhitelist) ? backendWhitelist : [])])];
+    
+    chrome.storage.local.set({ whitelist });
+    console.log("✅ Whitelist loaded:", whitelist);
   } catch (err) {
-    console.error("❌ Failed to fetch blacklist:", err);
+    console.error("❌ Failed to fetch whitelist:", err);
     throw err; // Re-throw so the caller can handle it
   }
 }
 
-// --- 3. Watch Tab URLs for Blacklist Hits ---
+// --- 3. Watch Tab URLs for Non-Whitelisted Sites ---
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   // Only check when the URL changes and tab is valid
   if (!changeInfo.url || !tab?.id) return;
 
-  const { blacklist, studentId } = await chrome.storage.local.get([
-    "blacklist",
+  const { whitelist, studentId } = await chrome.storage.local.get([
+    "whitelist",
     "studentId",
   ]);
 
-  // Skip if exam hasn't started or no blacklist yet
-  if (!blacklist || !studentId) return;
+  // Skip if exam hasn't started or no whitelist yet
+  if (!whitelist || !studentId) return;
 
   try {
-    const domain = new URL(changeInfo.url).hostname.replace("www.", "");
+    const url = new URL(changeInfo.url);
+    const domain = url.hostname.replace("www.", "");
+    
+    // Skip chrome://, chrome-extension://, and other internal URLs
+    if (url.protocol === "chrome:" || url.protocol === "chrome-extension:" || url.protocol === "about:") {
+      return;
+    }
 
-    // If the domain is blacklisted
-    if (blacklist.includes(domain)) {
-      console.log(`🚨 FLAGGED: Student visited ${domain}`);
+    // Check if domain is whitelisted (exact match or subdomain)
+    const isWhitelisted = whitelist.some(allowedDomain => {
+      return domain === allowedDomain || domain.endsWith(`.${allowedDomain}`);
+    });
+
+    // If the domain is NOT whitelisted, block and flag it
+    if (!isWhitelisted) {
+      console.log(`🚨 BLOCKED: Student attempted to visit non-whitelisted site: ${domain}`);
+      
+      // Flag the violation (screenshot will be taken here)
       await handleFlaggedSite(tab.id, changeInfo.url);
+      
+      // Close the tab after flagging
+      try {
+        await chrome.tabs.remove(tab.id);
+      } catch (err) {
+        console.warn("Could not close tab:", err);
+      }
     }
   } catch (err) {
     // ignore invalid URLs like chrome://newtab
@@ -93,7 +129,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 // --- 4. Handle the Flagging (Screenshot & API Call) ---
-async function handleFlaggedSite(tabId, illegalUrl) {
+async function handleFlaggedSite(tabId, blockedUrl) {
   try {
     // ✅ Check if the tab still exists
     const tab = await new Promise((resolve) => {
@@ -145,7 +181,7 @@ async function handleFlaggedSite(tabId, illegalUrl) {
         studentId,
         studentName: studentName || "Unknown Student",
         roomId,
-        illegalUrl,
+        blockedUrl,
         timestamp,
         screenshotData,
       }),
