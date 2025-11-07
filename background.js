@@ -1,5 +1,31 @@
 const API_BASE_URL = "http://localhost:3000";
 
+// Periodically refresh whitelist to pick up backend changes (every 30 seconds)
+let whitelistRefreshInterval = null;
+
+function startWhitelistRefresh() {
+  // Clear existing interval if any
+  if (whitelistRefreshInterval) {
+    clearInterval(whitelistRefreshInterval);
+  }
+  
+  // Refresh whitelist every 30 seconds
+  whitelistRefreshInterval = setInterval(async () => {
+    const { roomId } = await chrome.storage.local.get(["roomId"]);
+    if (roomId) {
+      console.log("🔄 Refreshing whitelist...");
+      await fetchWhitelist(roomId);
+    }
+  }, 30000); // 30 seconds
+}
+
+function stopWhitelistRefresh() {
+  if (whitelistRefreshInterval) {
+    clearInterval(whitelistRefreshInterval);
+    whitelistRefreshInterval = null;
+  }
+}
+
 // --- 1. Listen for Messages from Content Script ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "START_EXAM") {
@@ -15,11 +41,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Now that the exam has started, fetch the whitelist
     fetchWhitelist(message.roomId)
       .then(() => {
+        // Start periodic whitelist refresh
+        startWhitelistRefresh();
         sendResponse({ success: true, message: "Exam started successfully" });
       })
       .catch((err) => {
-        console.error("Failed to fetch whitelist, but exam started:", err);
-        sendResponse({ success: true, message: "Exam started, but whitelist fetch failed", warning: err.message });
+        // This shouldn't happen now since fetchWhitelist has fallback, but just in case
+        console.warn("Unexpected error in fetchWhitelist:", err);
+        startWhitelistRefresh(); // Still start refresh even if initial fetch had issues
+        sendResponse({ success: true, message: "Exam started successfully (using default whitelist)" });
       });
 
     // Return true to indicate we will send a response asynchronously
@@ -32,6 +62,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // --- 2. Fetch Whitelist from Backend ---
 async function fetchWhitelist(roomId) {
+  // Default whitelist (always included)
+  const defaultWhitelist = [
+    "google.com",
+    "google.co.in",
+    "youtube.com",
+    "gmail.com",
+    "mail.google.com",
+    "drive.google.com",
+    "docs.google.com",
+    "classroom.google.com",
+    "accounts.google.com"
+  ];
+  
+  // Normalize domain helper
+  const normalizeDomain = (domain) => {
+    if (typeof domain !== 'string') return null;
+    return domain.toLowerCase().replace(/^www\./, "").trim();
+  };
+  
   try {
     if (!roomId) {
       // Try to get roomId from storage if not provided
@@ -40,45 +89,64 @@ async function fetchWhitelist(roomId) {
     }
     
     if (!roomId) {
-      throw new Error("Room ID is required to fetch whitelist");
+      console.warn("⚠️ No roomId provided, using default whitelist only");
+      // Use default whitelist if no roomId
+      const normalizedDefault = defaultWhitelist.map(normalizeDomain).filter(Boolean);
+      chrome.storage.local.set({ whitelist: normalizedDefault });
+      console.log("✅ Default whitelist loaded:", normalizedDefault);
+      return;
     }
 
     const res = await fetch(`${API_BASE_URL}/api/proctoring/whitelist?roomId=${encodeURIComponent(roomId)}`);
     
     if (!res.ok) {
-      throw new Error(`Failed to fetch whitelist: ${res.status} ${res.statusText}`);
+      // If endpoint doesn't exist (404) or other error, fall back to default whitelist
+      if (res.status === 404) {
+        console.warn("⚠️ Whitelist endpoint not found (404), using default whitelist only");
+      } else {
+        console.warn(`⚠️ Failed to fetch whitelist (${res.status}), using default whitelist only`);
+      }
+      
+      // Use default whitelist as fallback
+      const normalizedDefault = defaultWhitelist.map(normalizeDomain).filter(Boolean);
+      chrome.storage.local.set({ whitelist: normalizedDefault });
+      console.log("✅ Default whitelist loaded:", normalizedDefault);
+      return;
     }
     
     const result = await res.json();
     
     // Check if the API returned an error
     if (result.success === false) {
-      throw new Error(result.message || "Failed to fetch whitelist");
+      console.warn("⚠️ API returned error, using default whitelist only:", result.message);
+      // Use default whitelist as fallback
+      const normalizedDefault = defaultWhitelist.map(normalizeDomain).filter(Boolean);
+      chrome.storage.local.set({ whitelist: normalizedDefault });
+      console.log("✅ Default whitelist loaded:", normalizedDefault);
+      return;
     }
     
     // Store the whitelist (assuming result contains the whitelist array or has a whitelist property)
     // Merge with default allowed domains (Google, YouTube, Gmail, etc.)
     const backendWhitelist = result.whitelist || result.data || result;
-    const defaultWhitelist = [
-      "google.com",
-      "google.co.in",
-      "youtube.com",
-      "gmail.com",
-      "mail.google.com",
-      "drive.google.com",
-      "docs.google.com",
-      "classroom.google.com",
-      "accounts.google.com"
-    ];
+    
+    const normalizedDefault = defaultWhitelist.map(normalizeDomain).filter(Boolean);
+    const normalizedBackend = Array.isArray(backendWhitelist) 
+      ? backendWhitelist.map(normalizeDomain).filter(Boolean)
+      : [];
     
     // Combine backend whitelist with default whitelist, removing duplicates
-    const whitelist = [...new Set([...defaultWhitelist, ...(Array.isArray(backendWhitelist) ? backendWhitelist : [])])];
+    const whitelist = [...new Set([...normalizedDefault, ...normalizedBackend])];
     
     chrome.storage.local.set({ whitelist });
-    console.log("✅ Whitelist loaded:", whitelist);
+    console.log("✅ Whitelist loaded (backend + default):", whitelist);
   } catch (err) {
-    console.error("❌ Failed to fetch whitelist:", err);
-    throw err; // Re-throw so the caller can handle it
+    // Network error or other exception - use default whitelist as fallback
+    console.warn("⚠️ Error fetching whitelist, using default whitelist only:", err.message);
+    const normalizedDefault = defaultWhitelist.map(normalizeDomain).filter(Boolean);
+    chrome.storage.local.set({ whitelist: normalizedDefault });
+    console.log("✅ Default whitelist loaded:", normalizedDefault);
+    // Don't throw error - we have a fallback whitelist
   }
 }
 
@@ -97,34 +165,96 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   try {
     const url = new URL(changeInfo.url);
-    const domain = url.hostname.replace("www.", "");
+    let domain = url.hostname.toLowerCase();
     
     // Skip chrome://, chrome-extension://, and other internal URLs
     if (url.protocol === "chrome:" || url.protocol === "chrome-extension:" || url.protocol === "about:") {
       return;
     }
 
+    // Allow browser search bar searches (search queries from address bar)
+    // Common search engines: Google, Bing, Yahoo, DuckDuckGo, etc.
+    const isSearchQuery = (() => {
+      const searchDomains = [
+        'google.com',
+        'google.co.in',
+        'bing.com',
+        'yahoo.com',
+        'search.yahoo.com',
+        'duckduckgo.com',
+        'yandex.com',
+        'baidu.com'
+      ];
+      
+      // Check if domain is a search engine
+      const isSearchEngine = searchDomains.some(searchDomain => {
+        return domain === searchDomain || domain.endsWith(`.${searchDomain}`);
+      });
+      
+      if (!isSearchEngine) return false;
+      
+      // Check if URL contains search query parameters
+      const searchParams = ['q', 'query', 'p', 'search', 'text', 'wd'];
+      const hasSearchParam = searchParams.some(param => url.searchParams.has(param));
+      
+      // Also check common search paths
+      const searchPaths = ['/search', '/webhp', '/'];
+      const hasSearchPath = searchPaths.some(path => url.pathname === path || url.pathname.startsWith(path));
+      
+      return hasSearchParam || (hasSearchPath && url.searchParams.toString().length > 0);
+    })();
+
+    // If it's a search query, allow it without flagging
+    if (isSearchQuery) {
+      console.log(`✅ ALLOWED: Browser search query from ${domain}`);
+      return;
+    }
+
+    // Remove www. prefix for matching
+    const domainWithoutWww = domain.replace(/^www\./, "");
+    
     // Check if domain is whitelisted (exact match or subdomain)
+    // Note: We only check the hostname, so github.com/mrmushii will match if github.com is whitelisted
     const isWhitelisted = whitelist.some(allowedDomain => {
-      return domain === allowedDomain || domain.endsWith(`.${allowedDomain}`);
+      if (!allowedDomain || typeof allowedDomain !== 'string') return false;
+      
+      const allowedDomainLower = allowedDomain.toLowerCase().replace(/^www\./, "").trim();
+      
+      // Exact match (e.g., github.com === github.com)
+      if (domainWithoutWww === allowedDomainLower) {
+        return true;
+      }
+      
+      // Subdomain match: mail.google.com should match if google.com is whitelisted
+      if (domainWithoutWww.endsWith(`.${allowedDomainLower}`)) {
+        return true;
+      }
+      
+      // Parent domain match: google.com should match if mail.google.com is whitelisted
+      if (allowedDomainLower.endsWith(`.${domainWithoutWww}`)) {
+        return true;
+      }
+      
+      return false;
     });
 
-    // If the domain is NOT whitelisted, block and flag it
+    console.log(`🔍 Checking domain: ${domain} (without www: ${domainWithoutWww}), Whitelisted: ${isWhitelisted}, Whitelist:`, whitelist);
+
+    // If the domain is NOT whitelisted, flag it (but don't block - just monitor)
     if (!isWhitelisted) {
-      console.log(`🚨 BLOCKED: Student attempted to visit non-whitelisted site: ${domain}`);
+      console.log(`🚨 FLAGGED: Student visited non-whitelisted site: ${domain} (path: ${url.pathname})`);
       
-      // Flag the violation (screenshot will be taken here)
+      // Wait for page to load before taking screenshot (2 seconds delay)
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Flag the violation (screenshot will be taken here) - but don't close the tab
       await handleFlaggedSite(tab.id, changeInfo.url);
-      
-      // Close the tab after flagging
-      try {
-        await chrome.tabs.remove(tab.id);
-      } catch (err) {
-        console.warn("Could not close tab:", err);
-      }
+    } else {
+      console.log(`✅ ALLOWED: Student visited whitelisted site: ${domain}${url.pathname}`);
     }
   } catch (err) {
     // ignore invalid URLs like chrome://newtab
+    console.warn("Error processing URL:", err);
   }
 });
 
@@ -145,17 +275,33 @@ async function handleFlaggedSite(tabId, blockedUrl) {
 
     if (!tab) return; // stop if no valid tab
 
+    // Wait a bit more to ensure page is fully loaded before screenshot
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     // ✅ Capture screenshot from tab's window
-    const windowId = tab.windowId;
-    const screenshotDataUrl = await new Promise((resolve, reject) => {
-      chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: 80 }, (dataUrl) => {
-        if (chrome.runtime.lastError || !dataUrl) {
-          reject(chrome.runtime.lastError?.message || "Failed to capture screenshot");
-        } else {
-          resolve(dataUrl);
-        }
+    let screenshotData = "";
+    try {
+      const windowId = tab.windowId;
+      const screenshotDataUrl = await new Promise((resolve, reject) => {
+        chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: 80 }, (dataUrl) => {
+          if (chrome.runtime.lastError || !dataUrl) {
+            reject(chrome.runtime.lastError?.message || "Failed to capture screenshot");
+          } else {
+            resolve(dataUrl);
+          }
+        });
       });
-    });
+
+      // ✅ Clean the image data
+      if (screenshotDataUrl && screenshotDataUrl.includes(",")) {
+        screenshotData = screenshotDataUrl.split(",")[1];
+      } else {
+        console.warn("⚠️ Screenshot data format unexpected, using empty string");
+      }
+    } catch (screenshotErr) {
+      console.warn("⚠️ Failed to capture screenshot:", screenshotErr.message);
+      // Continue without screenshot - still report the violation
+    }
 
     // ✅ Get saved student/room details
     const { studentId, studentName, roomId } = await chrome.storage.local.get([
@@ -166,29 +312,47 @@ async function handleFlaggedSite(tabId, blockedUrl) {
 
     if (!studentId || !roomId) {
       console.warn("⚠️ Missing student or room info, skipping report.");
+      console.warn("   studentId:", studentId, "roomId:", roomId);
       return;
     }
-
-    // ✅ Clean the image data
-    const screenshotData = screenshotDataUrl.split(",")[1];
     const timestamp = new Date().toISOString();
+
+    // Prepare the payload
+    const payload = {
+      studentId,
+      studentName: studentName || "Unknown Student",
+      roomId,
+      illegalUrl: blockedUrl, // Backend might expect 'illegalUrl' instead of 'blockedUrl'
+      blockedUrl: blockedUrl, // Include both for compatibility
+      timestamp,
+      screenshotData: screenshotData || "", // Ensure it's not undefined
+    };
+
+    // Log what we're sending (without screenshot data for brevity)
+    console.log("📤 Sending flag report:", {
+      studentId: payload.studentId,
+      studentName: payload.studentName,
+      roomId: payload.roomId,
+      illegalUrl: payload.illegalUrl,
+      timestamp: payload.timestamp,
+      screenshotDataLength: payload.screenshotData ? payload.screenshotData.length : 0,
+    });
 
     // ✅ Send the report to backend
     const response = await fetch(`${API_BASE_URL}/api/proctoring/flag`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        studentId,
-        studentName: studentName || "Unknown Student",
-        roomId,
-        blockedUrl,
-        timestamp,
-        screenshotData,
-      }),
+      body: JSON.stringify(payload),
     });
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ Flag report failed (${response.status}):`, errorText);
+      return;
+    }
+
     const result = await response.json();
-    console.log(`✅ [${timestamp}] Flag report sent:`, result.message);
+    console.log(`✅ [${timestamp}] Flag report sent:`, result.message || result);
   } catch (err) {
     console.error("❌ Error sending flag:", err);
   }
