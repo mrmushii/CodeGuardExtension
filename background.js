@@ -1,4 +1,4 @@
-const API_BASE_URL = "http://localhost:3000";
+const API_BASE_URL = "https://codeguard-server-side-walb.onrender.com";
 
 // Periodically refresh whitelist to pick up backend changes (every 30 seconds)
 let whitelistRefreshInterval = null;
@@ -27,32 +27,79 @@ function stopWhitelistRefresh() {
 }
 
 // --- 1. Listen for Messages from Content Script ---
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   if (message.type === "START_EXAM") {
-    console.log("📘 Exam started:", message);
+    console.log("📘 Exam initialization:", message);
 
-    // Save all student details
+    // Save all student details but DON'T start monitoring yet
+    // Monitoring will only start when exam actually begins (via exam-started event)
     chrome.storage.local.set({
       studentId: message.studentId,
       studentName: message.studentName || "Unknown Student",
       roomId: message.roomId,
+      examActive: false, // Don't start monitoring until exam actually starts
     });
 
-    // Now that the exam has started, fetch the whitelist
+    // Fetch whitelist but don't start monitoring yet (examActive is false)
     fetchWhitelist(message.roomId)
       .then(() => {
-        // Start periodic whitelist refresh
-        startWhitelistRefresh();
-        sendResponse({ success: true, message: "Exam started successfully" });
+        // Don't start whitelist refresh yet - wait for EXAM_STARTED message
+        sendResponse({ success: true, message: "Student info saved, waiting for exam to start" });
       })
       .catch((err) => {
         // This shouldn't happen now since fetchWhitelist has fallback, but just in case
         console.warn("Unexpected error in fetchWhitelist:", err);
-        startWhitelistRefresh(); // Still start refresh even if initial fetch had issues
-        sendResponse({ success: true, message: "Exam started successfully (using default whitelist)" });
+        sendResponse({ success: true, message: "Student info saved (using default whitelist)" });
       });
 
     // Return true to indicate we will send a response asynchronously
+    return true;
+  }
+  
+  if (message.type === "EXAM_STARTED") {
+    console.log("📘 Exam actually started:", message);
+    
+    // Now start monitoring - exam has officially begun
+    chrome.storage.local.set({
+      examActive: true,
+    });
+    
+    // Fetch whitelist if not already fetched
+    const { roomId } = await chrome.storage.local.get(["roomId"]);
+    if (roomId) {
+      await fetchWhitelist(roomId);
+      startWhitelistRefresh();
+    }
+    
+    sendResponse({ success: true, message: "Monitoring started - exam is active" });
+    return true;
+  }
+  
+  if (message.type === "END_EXAM") {
+    console.log("📘 Exam ended:", message);
+    
+    // Stop monitoring by clearing examActive flag
+    chrome.storage.local.set({
+      examActive: false,
+    });
+    
+    // Stop whitelist refresh
+    stopWhitelistRefresh();
+    
+    sendResponse({ success: true, message: "Exam ended, monitoring stopped" });
+    return true;
+  }
+  
+  if (message.type === "STOP_MONITORING") {
+    console.log("📘 Stopping monitoring");
+    
+    // Clear all exam-related data
+    chrome.storage.local.remove(["examActive", "roomId", "studentId", "studentName"]);
+    
+    // Stop whitelist refresh
+    stopWhitelistRefresh();
+    
+    sendResponse({ success: true, message: "Monitoring stopped" });
     return true;
   }
   
@@ -72,7 +119,10 @@ async function fetchWhitelist(roomId) {
     "drive.google.com",
     "docs.google.com",
     "classroom.google.com",
-    "accounts.google.com"
+    "accounts.google.com",
+    // ImageKit domains for viewing/downloading exam questions
+    "ik.imagekit.io",
+    "imagekit.io"
   ];
   
   // Normalize domain helper
@@ -155,13 +205,21 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   // Only check when the URL changes and tab is valid
   if (!changeInfo.url || !tab?.id) return;
 
-  const { whitelist, studentId } = await chrome.storage.local.get([
+  const { whitelist, studentId, roomId, examActive } = await chrome.storage.local.get([
     "whitelist",
     "studentId",
+    "roomId",
+    "examActive",
   ]);
 
   // Skip if exam hasn't started or no whitelist yet
-  if (!whitelist || !studentId) return;
+  if (!whitelist || !studentId || !roomId) return;
+  
+  // ✅ Only monitor if exam is active
+  if (examActive !== true) {
+    console.log("ℹ️ Exam not active, skipping flag check");
+    return;
+  }
 
   try {
     const url = new URL(changeInfo.url);
@@ -313,6 +371,13 @@ async function handleFlaggedSite(tabId, blockedUrl) {
     if (!studentId || !roomId) {
       console.warn("⚠️ Missing student or room info, skipping report.");
       console.warn("   studentId:", studentId, "roomId:", roomId);
+      return;
+    }
+    
+    // ✅ Double-check exam is still active before sending flag
+    const { examActive } = await chrome.storage.local.get(["examActive"]);
+    if (examActive !== true) {
+      console.log("ℹ️ Exam not active, skipping flag report");
       return;
     }
     const timestamp = new Date().toISOString();
