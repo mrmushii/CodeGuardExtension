@@ -53,8 +53,16 @@ window.addEventListener("message", (event) => {
   if (event.data && event.data.target === "CODEGUARD_EXTENSION") {
     console.log("📨 Content script received message from page:", event.data);
 
-    // Forward the message to the background script
+    // Handle PING message directly (for extension availability check)
     const message = event.data.message;
+    if (message && message.type === "PING") {
+      console.log("🏓 Received PING, responding with PONG");
+      window.postMessage({
+        target: "CODEGUARD_WEB_APP",
+        type: "PONG"
+      }, window.location.origin);
+      return;
+    }
     
     if (message && message.type) {
       console.log(`📤 Forwarding ${message.type} to background script...`);
@@ -106,6 +114,88 @@ window.addEventListener("message", (event) => {
 });
 
 console.log("✅ Content script ready to receive messages from web page");
+
+// Paste detection variables
+let pasteHistory = [];
+const LARGE_PASTE_THRESHOLD = 1000; // characters
+const RAPID_PASTE_WINDOW = 5000; // 5 seconds
+const RAPID_PASTE_COUNT = 3;
+
+// Function to report paste violations
+function reportPasteViolation(violationType, details) {
+  console.log(`🚨 Paste violation detected: ${violationType}`, details);
+  
+  // Get student info from sessionStorage
+  const studentId = sessionStorage.getItem("studentId");
+  const roomId = sessionStorage.getItem("roomId");
+  
+  if (!studentId || !roomId) {
+    console.warn("⚠️ Cannot report paste violation - missing studentId or roomId");
+    return;
+  }
+  
+  // Send violation to background script
+  chrome.runtime.sendMessage({
+    type: "PASTE_VIOLATION",
+    studentId,
+    roomId,
+    violationType,
+    details,
+    timestamp: new Date().toISOString()
+  }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error("❌ Error reporting paste violation:", chrome.runtime.lastError.message);
+    } else {
+      console.log("✅ Paste violation reported:", response);
+    }
+  });
+}
+
+// Monitor paste events
+document.addEventListener('paste', (e) => {
+  try {
+    const pasteData = e.clipboardData?.getData('text') || '';
+    const timestamp = Date.now();
+    
+    console.log(`📋 Paste event detected, size: ${pasteData.length} characters`);
+    
+    // Check for large paste
+    if (pasteData.length > LARGE_PASTE_THRESHOLD) {
+      reportPasteViolation('large_paste', { 
+        size: pasteData.length,
+        preview: pasteData.substring(0, 100) // First 100 chars for context
+      });
+    }
+    
+    // Check for rapid paste sequence
+    // Remove old entries outside the time window
+    pasteHistory = pasteHistory.filter(t => timestamp - t < RAPID_PASTE_WINDOW);
+    pasteHistory.push(timestamp);
+    
+    if (pasteHistory.length >= RAPID_PASTE_COUNT) {
+      reportPasteViolation('rapid_paste', { 
+        count: pasteHistory.length,
+        timeWindow: RAPID_PASTE_WINDOW
+      });
+    }
+  } catch (err) {
+    console.error("❌ Error handling paste event:", err);
+  }
+}, true); // Use capture phase to catch all paste events
+
+// Also monitor keyboard shortcuts (Ctrl+C, Ctrl+V, Cmd+C, Cmd+V)
+document.addEventListener('keydown', (e) => {
+  const isModifierPressed = e.ctrlKey || e.metaKey;
+  const isPasteShortcut = isModifierPressed && (e.key === 'v' || e.key === 'V');
+  
+  if (isPasteShortcut) {
+    // The actual paste will be caught by the paste event listener above
+    // This is just for logging
+    console.log("⌨️ Paste shortcut detected (Ctrl+V / Cmd+V)");
+  }
+}, true);
+
+console.log("✅ Paste detection initialized");
 
 window.addEventListener("load", () => {
   console.log("Window 'load' event fired.");

@@ -170,6 +170,72 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
+  if (message.type === "PASTE_VIOLATION") {
+    console.log("📘 Paste violation reported:", message);
+    
+    // Handle async operations
+    (async () => {
+      try {
+        const { studentId, roomId, violationType, details, timestamp } = message;
+        
+        if (!studentId || !roomId) {
+          console.warn("⚠️ Missing studentId or roomId for paste violation");
+          sendResponse({ success: false, message: "Missing required fields" });
+          return;
+        }
+        
+        // Get student name from storage
+        const { studentName } = await chrome.storage.local.get(["studentName"]);
+        
+        // Check if exam is active
+        const { examActive } = await chrome.storage.local.get(["examActive"]);
+        if (examActive !== true) {
+          console.log("ℹ️ Exam not active, skipping paste violation report");
+          sendResponse({ success: true, message: "Violation logged but exam not active" });
+          return;
+        }
+        
+        // Prepare payload for backend (using similar format as URL violations)
+        const payload = {
+          studentId,
+          studentName: studentName || "Unknown Student",
+          roomId,
+          illegalUrl: `paste_violation:${violationType}`, // Format: paste_violation:large_paste or paste_violation:rapid_paste
+          blockedUrl: `paste_violation:${violationType}`, // For compatibility
+          actionType: `paste_${violationType}`, // paste_large_paste or paste_rapid_paste
+          violationDetails: details, // Additional details about the violation
+          timestamp: timestamp || new Date().toISOString(),
+          screenshotData: "" // No screenshot for paste violations
+        };
+        
+        console.log("📤 Sending paste violation to backend:", payload);
+        
+        // Send to backend
+        const response = await fetch(`${API_BASE_URL}/api/proctoring/flag`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`❌ Paste violation report failed (${response.status}):`, errorText);
+          sendResponse({ success: false, message: "Failed to report violation" });
+          return;
+        }
+        
+        const result = await response.json();
+        console.log(`✅ Paste violation reported:`, result.message || result);
+        sendResponse({ success: true, message: "Paste violation reported successfully" });
+      } catch (error) {
+        console.error("❌ Error handling paste violation:", error);
+        sendResponse({ success: false, message: "Error reporting violation", error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
   // Return false for messages we don't handle
   return false;
 });
