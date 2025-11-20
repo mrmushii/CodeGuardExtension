@@ -3,10 +3,6 @@ const API_BASE_URL = "http://localhost:3000";
 // Removed automatic whitelist refresh - now updates happen via socket events
 // Whitelist is fetched once when exam starts and refreshed when examiner adds/removes sites
 
-// Track recently flagged URLs to prevent duplicates
-const recentlyFlagged = new Map(); // key: "roomId:studentId:domain", value: timestamp
-const FLAG_COOLDOWN = 5000; // 5 seconds cooldown between flags for same domain
-
 function startWhitelistRefresh() {
   // No automatic refresh - whitelist updates via socket events
   console.log("ℹ️ Whitelist will be updated via real-time socket events");
@@ -16,16 +12,6 @@ function stopWhitelistRefresh() {
   // No interval to stop - keeping this function for compatibility
   console.log("ℹ️ No whitelist refresh interval to stop");
 }
-
-// Clean up old entries from recentlyFlagged map periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, timestamp] of recentlyFlagged.entries()) {
-    if (now - timestamp > FLAG_COOLDOWN) {
-      recentlyFlagged.delete(key);
-    }
-  }
-}, 10000); // Clean up every 10 seconds
 
 // --- 1. Listen for Messages from Content Script ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -63,16 +49,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   if (message.type === "EXAM_STARTED") {
     console.log("📘 EXAM_STARTED message received:", message);
+    console.log("🔍 Full message object:", JSON.stringify(message, null, 2));
     
     // Handle async operations
     (async () => {
       try {
         // Get current storage state
         const currentState = await chrome.storage.local.get(["roomId", "studentId", "studentName", "examActive"]);
-        console.log("📋 Current storage state:", currentState);
+        console.log("📋 Current storage state BEFORE update:", currentState);
         
         // If roomId is provided in message, use it (fallback)
         const roomId = message.roomId || currentState.roomId;
+        
+        if (!roomId) {
+          console.error("❌ No roomId available - cannot start exam monitoring");
+          sendResponse({ success: false, message: "No roomId available", error: "Missing roomId" });
+          return;
+        }
         
         // Now start monitoring - exam has officially begun
         await chrome.storage.local.set({
@@ -81,9 +74,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ...(message.roomId && { roomId: message.roomId })
         });
         
-        // Verify it was set
-        const verify = await chrome.storage.local.get(["examActive", "roomId"]);
+        // Verify it was set - with retry logic
+        let verify = await chrome.storage.local.get(["examActive", "roomId"]);
         console.log("✅ examActive set to:", verify.examActive, "roomId:", verify.roomId);
+        
+        // If examActive is still not true, retry once
+        if (verify.examActive !== true) {
+          console.warn("⚠️ examActive not set correctly, retrying...");
+          await chrome.storage.local.set({ examActive: true });
+          verify = await chrome.storage.local.get(["examActive", "roomId"]);
+          console.log("✅ After retry - examActive:", verify.examActive, "roomId:", verify.roomId);
+        }
         
         // Fetch whitelist if not already fetched
         if (verify.roomId) {
@@ -94,7 +95,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           console.warn("⚠️ No roomId found in storage when starting exam");
         }
         
-        sendResponse({ success: true, message: "Monitoring started - exam is active", examActive: true });
+        // Final verification before sending response
+        const finalCheck = await chrome.storage.local.get(["examActive"]);
+        console.log("🔍 Final verification - examActive:", finalCheck.examActive);
+        
+        sendResponse({ 
+          success: true, 
+          message: "Monitoring started - exam is active", 
+          examActive: finalCheck.examActive,
+          verified: finalCheck.examActive === true
+        });
       } catch (error) {
         console.error("❌ Error handling EXAM_STARTED:", error);
         sendResponse({ success: false, message: "Error starting monitoring", error: error.message });
@@ -167,14 +177,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // --- 2. Fetch Whitelist from Backend ---
 async function fetchWhitelist(roomId) {
   // Default whitelist (always included)
-  // Using specific Google services instead of wildcard google.com to prevent subdomain abuse
   const defaultWhitelist = [
-    // Google search and core services (but NOT all *.google.com subdomains)
     "google.com",
     "google.co.in",
-    "google.co.uk",
-    "google.ca",
-    "google.com.au",
     "youtube.com",
     "gmail.com",
     "mail.google.com",
@@ -182,18 +187,9 @@ async function fetchWhitelist(roomId) {
     "docs.google.com",
     "classroom.google.com",
     "accounts.google.com",
-    "meet.google.com", // For video calls if needed
     // ImageKit domains for viewing/downloading exam questions
     "ik.imagekit.io",
     "imagekit.io"
-  ];
-  
-  // Blocked subdomains (even if parent domain is whitelisted)
-  // These will always be flagged regardless of wildcard matches
-  const alwaysBlockedSubdomains = [
-    "gemini.google.com",
-    "bard.google.com",
-    "ai.google.com"
   ];
   
   // Normalize domain helper
@@ -301,12 +297,20 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     console.log("ℹ️ Exam not active, skipping flag check", { 
       examActive, 
       examActiveType: typeof examActive,
+      examActiveValue: examActive,
       studentId, 
       roomId, 
       hasWhitelist: !!whitelist 
     });
     // Debug: Check what's actually in storage
     console.log("🔍 Full storage state:", storageData);
+    
+    // Try to re-check after a short delay (in case of timing issue)
+    setTimeout(async () => {
+      const recheck = await chrome.storage.local.get(["examActive"]);
+      console.log("🔍 Re-check after delay - examActive:", recheck.examActive);
+    }, 1000);
+    
     return;
   }
   
@@ -362,83 +366,45 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // Remove www. prefix for matching
     const domainWithoutWww = domain.replace(/^www\./, "");
     
-    // ✅ Check if domain is in the always-blocked list (takes precedence)
-    const alwaysBlockedSubdomains = [
-      "gemini.google.com",
-      "bard.google.com",
-      "ai.google.com",
-      "chatgpt.com",
-      "chat.openai.com"
-    ];
-    
-    const isAlwaysBlocked = alwaysBlockedSubdomains.some(blockedDomain => {
-      const blockedDomainLower = blockedDomain.toLowerCase();
-      return domainWithoutWww === blockedDomainLower || domain === blockedDomainLower;
-    });
-    
-    if (isAlwaysBlocked) {
-      console.log(`🚫 Domain ${domain} is in always-blocked list`);
-      // Skip to flagging logic below
-    } else {
-      // Check if domain is whitelisted (exact match or specific subdomain)
-      // Note: We only check the hostname, so github.com/mrmushii will match if github.com is whitelisted
-      const isWhitelisted = whitelist.some(allowedDomain => {
-        if (!allowedDomain || typeof allowedDomain !== 'string') return false;
-        
-        const allowedDomainLower = allowedDomain.toLowerCase().replace(/^www\./, "").trim();
-        
-        // Exact match (e.g., github.com === github.com)
-        if (domainWithoutWww === allowedDomainLower) {
-          return true;
-        }
-        
-        // Specific subdomain match: Only allow if EXACTLY specified
-        // e.g., mail.google.com is whitelisted, so only mail.google.com is allowed
-        // This prevents gemini.google.com from matching google.com wildcard
-        
-        // Check if the allowed domain is already a subdomain (has a dot before the TLD)
-        const isAllowedDomainASubdomain = allowedDomainLower.split('.').length > 2;
-        
-        if (isAllowedDomainASubdomain) {
-          // If allowed domain is a specific subdomain (e.g., mail.google.com),
-          // only allow exact match (already checked above)
-          return false;
-        } else {
-          // If allowed domain is a root domain (e.g., google.com),
-          // ONLY allow if current domain is also the root (exact match already checked)
-          // Do NOT allow subdomains like gemini.google.com
-          return false;
-        }
-      });
+    // Check if domain is whitelisted (exact match or subdomain)
+    // Note: We only check the hostname, so github.com/mrmushii will match if github.com is whitelisted
+    const isWhitelisted = whitelist.some(allowedDomain => {
+      if (!allowedDomain || typeof allowedDomain !== 'string') return false;
       
-      if (isWhitelisted) {
-        console.log(`✅ ALLOWED: Student visited whitelisted site: ${domain}${url.pathname}`);
-        return;
+      const allowedDomainLower = allowedDomain.toLowerCase().replace(/^www\./, "").trim();
+      
+      // Exact match (e.g., github.com === github.com)
+      if (domainWithoutWww === allowedDomainLower) {
+        return true;
       }
-    }
+      
+      // Subdomain match: mail.google.com should match if google.com is whitelisted
+      if (domainWithoutWww.endsWith(`.${allowedDomainLower}`)) {
+        return true;
+      }
+      
+      // Parent domain match: google.com should match if mail.google.com is whitelisted
+      if (allowedDomainLower.endsWith(`.${domainWithoutWww}`)) {
+        return true;
+      }
+      
+      return false;
+    });
 
-    console.log(`🔍 Checking domain: ${domain} (without www: ${domainWithoutWww}), Whitelist:`, whitelist);
+    console.log(`🔍 Checking domain: ${domain} (without www: ${domainWithoutWww}), Whitelisted: ${isWhitelisted}, Whitelist:`, whitelist);
 
-    // ✅ Check if we've recently flagged this domain (prevent duplicates from redirects)
-    const flagKey = `${roomId}:${studentId}:${domainWithoutWww}`;
-    const lastFlagTime = recentlyFlagged.get(flagKey);
-    const now = Date.now();
-    
-    if (lastFlagTime && (now - lastFlagTime) < FLAG_COOLDOWN) {
-      console.log(`⏭️ Skipping duplicate flag for ${domain} (flagged ${Math.round((now - lastFlagTime) / 1000)}s ago)`);
-      return;
+    // If the domain is NOT whitelisted, flag it (but don't block - just monitor)
+    if (!isWhitelisted) {
+      console.log(`🚨 FLAGGED: Student visited non-whitelisted site: ${domain} (path: ${url.pathname})`);
+      
+      // Wait for page to load before taking screenshot (2 seconds delay)
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Flag the violation (screenshot will be taken here) - but don't close the tab
+      await handleFlaggedSite(tab.id, changeInfo.url);
+    } else {
+      console.log(`✅ ALLOWED: Student visited whitelisted site: ${domain}${url.pathname}`);
     }
-    
-    // Flag the violation (screenshot will be taken here) - but don't close the tab
-    console.log(`🚨 FLAGGED: Student visited non-whitelisted site: ${domain} (path: ${url.pathname})`);
-    
-    // Mark this domain as recently flagged
-    recentlyFlagged.set(flagKey, now);
-    
-    // Wait for page to load before taking screenshot (2 seconds delay)
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    await handleFlaggedSite(tab.id, changeInfo.url);
   } catch (err) {
     // ignore invalid URLs like chrome://newtab
     console.warn("Error processing URL:", err);

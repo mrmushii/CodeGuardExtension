@@ -58,7 +58,7 @@ window.addEventListener("message", (event) => {
     
     if (message && message.type) {
       console.log(`📤 Forwarding ${message.type} to background script...`);
-      console.log(`🔍 Message details:`, message);
+      console.log(`🔍 Full message payload:`, JSON.stringify(message, null, 2));
       
       // Use try-catch to handle potential errors
       try {
