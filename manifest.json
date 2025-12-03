@@ -10,8 +10,8 @@
   ],
 
   "host_permissions": [
-    "https://codeguard-server-side-walb.onrender.com/*",
-    "https://codeguard-server-side-walb.onrender.com/*",
+    "https://codeguardserverside.onrender.com/*",
+    "https://codeguardserverside.onrender.com/*",
     "<all_urls>"
   ],
 
@@ -23,7 +23,7 @@
     {
       "matches": [
         "http://localhost:5173/*",
-        "https://code-guard-client-side.vercel.app/*"
+        "https://code-guard-six.vercel.app/*"
       ],
       "js": ["content.js"]
     }

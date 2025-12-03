@@ -2,16 +2,16 @@
  * API Base URL Configuration
  * 
  * To switch between localhost and live server:
- * - Localhost: Change to "https://codeguard-server-side-walb.onrender.com"
- * - Live Server: Change to "https://codeguard-server-side-walb.onrender.com"
+ * - Localhost: Change to "https://codeguardserverside.onrender.com"
+ * - Live Server: Change to "https://codeguardserverside.onrender.com"
  * 
  * Note: Chrome extensions cannot use environment variables directly.
  * You must update this value manually when switching environments.
  * Also update the host_permissions in manifest.json to match.
  */
-const API_BASE_URL = "https://codeguard-server-side-walb.onrender.com";
+const API_BASE_URL = "https://codeguardserverside.onrender.com";
 // For localhost development, uncomment the line below and comment the line above:
-// const API_BASE_URL = "https://codeguard-server-side-walb.onrender.com";
+// const API_BASE_URL = "https://codeguardserverside.onrender.com";
 
 // Removed automatic whitelist refresh - now updates happen via socket events
 // Whitelist is fetched once when exam starts and refreshed when examiner adds/removes sites
