@@ -30,6 +30,7 @@ const FILES_TO_INCLUDE = [
   'background.js',
   'content.js',
   'html2canvas.min.js',
+  'recording.js',
 ];
 
 // Create temp directory for packaging
