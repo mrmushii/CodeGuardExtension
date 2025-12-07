@@ -772,3 +772,50 @@ async function handleFlaggedSite(tabId, blockedUrl) {
     console.error("❌ Error sending flag:", err);
   }
 }
+
+// --- 5. Check for Updates ---
+async function checkForUpdates() {
+  try {
+    const manifest = chrome.runtime.getManifest();
+    const currentVersion = manifest.version;
+    
+    console.log(`🔍 Checking for updates... Current version: ${currentVersion}`);
+    
+    const response = await fetch(`${API_BASE_URL}/extension/version.json`);
+    if (!response.ok) return;
+    
+    const data = await response.json();
+    const latestVersion = data.version;
+    
+    if (latestVersion && latestVersion !== currentVersion) {
+      console.log(`✨ New version available: ${latestVersion}`);
+      
+      // Compare versions (simple string comparison for now, or semantic versioning if needed)
+      // Assuming semantic versioning (major.minor.patch)
+      const isNewer = (v1, v2) => {
+        const p1 = v1.split('.').map(Number);
+        const p2 = v2.split('.').map(Number);
+        for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
+          const n1 = p1[i] || 0;
+          const n2 = p2[i] || 0;
+          if (n1 > n2) return true;
+          if (n1 < n2) return false;
+        }
+        return false;
+      };
+
+      if (isNewer(latestVersion, currentVersion)) {
+        chrome.action.setBadgeText({ text: "NEW" });
+        chrome.action.setBadgeBackgroundColor({ color: "#FF0000" });
+        chrome.action.setTitle({ title: `New version ${latestVersion} available! Please update.` });
+      }
+    }
+  } catch (error) {
+    console.warn("⚠️ Failed to check for updates:", error);
+  }
+}
+
+// Check for updates on startup
+checkForUpdates();
+// Check every hour
+setInterval(checkForUpdates, 60 * 60 * 1000);

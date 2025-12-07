@@ -74,9 +74,12 @@ console.log('\n🗜️  Creating ZIP file...');
 
 try {
   // Use native zip command (works on macOS, Linux, and Windows with Git Bash)
+  // Fix: Use single quotes for PowerShell paths to handle spaces correctly, or ensure proper escaping
   const zipCommand = process.platform === 'win32'
-    ? `powershell Compress-Archive -Path "${TEMP_DIR}\\*" -DestinationPath "${zipFilePath}" -Force`
+    ? `powershell -Command "Compress-Archive -Path '${TEMP_DIR}\\*' -DestinationPath '${zipFilePath}' -Force"`
     : `cd "${TEMP_DIR}" && zip -r "${zipFilePath}" . -q`;
+
+// ... (previous code)
 
   execSync(zipCommand, { stdio: 'inherit' });
   
@@ -87,10 +90,29 @@ try {
     console.log(`\n✅ Extension packaged successfully!`);
     console.log(`   File: ${zipFilePath}`);
     console.log(`   Size: ${fileSizeMB} MB`);
-    console.log(`\n📤 Ready for upload to GitHub Releases or your server`);
-    console.log(`   Update EXTENSION_DOWNLOAD_URLS in ExtensionPrompt.jsx with:`);
-    console.log(`   chrome: 'https://your-server.com/extensions/${zipFileName}'`);
-    console.log(`   edge: 'https://your-server.com/extensions/${zipFileName}'`);
+
+    // --- DEPLOY TO SERVER ---
+    console.log('\n🚀 Deploying to server...');
+    const SERVER_PUBLIC_DIR = path.join(EXTENSION_DIR, '..', 'CodeGuard-Server-Side-', 'public', 'extension');
+    
+    // Ensure server public dir exists
+    if (!fs.existsSync(SERVER_PUBLIC_DIR)) {
+      fs.mkdirSync(SERVER_PUBLIC_DIR, { recursive: true });
+    }
+
+    // 1. Copy ZIP to server
+    const serverZipPath = path.join(SERVER_PUBLIC_DIR, 'codeguard-extension.zip');
+    fs.copyFileSync(zipFilePath, serverZipPath);
+    console.log(`   ✓ Copied zip to ${serverZipPath}`);
+
+    // 2. Create version.json
+    const versionData = { version: VERSION };
+    fs.writeFileSync(path.join(SERVER_PUBLIC_DIR, 'version.json'), JSON.stringify(versionData, null, 2));
+    console.log(`   ✓ Updated version.json to ${VERSION}`);
+
+    console.log(`\n📤 Ready for upload!`);
+    console.log(`   The extension has been copied to the server's public folder.`);
+    console.log(`   Just push the server code to deploy.`);
   } else {
     throw new Error('ZIP file was not created');
   }
