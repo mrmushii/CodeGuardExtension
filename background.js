@@ -2,16 +2,19 @@
  * API Base URL Configuration
  * 
  * To switch between localhost and live server:
- * - Localhost: Change to "https://codeguardserverside.onrender.com"
+ * - Localhost: Change to "http://localhost:3000"
  * - Live Server: Change to "https://codeguardserverside.onrender.com"
  * 
  * Note: Chrome extensions cannot use environment variables directly.
  * You must update this value manually when switching environments.
  * Also update the host_permissions in manifest.json to match.
  */
-const API_BASE_URL = "https://codeguardserverside.onrender.com";
-// For localhost development, uncomment the line below and comment the line above:
+const API_BASE_URL = "http://localhost:3000";
+// For production, use:
 // const API_BASE_URL = "https://codeguardserverside.onrender.com";
+
+// Import recording manager (ES6 module - requires "type": "module" in manifest)
+import { recordingManager, RECORDING_CONFIG } from './recording.js';
 
 // Removed automatic whitelist refresh - now updates happen via socket events
 // Whitelist is fetched once when exam starts and refreshed when examiner adds/removes sites
@@ -246,6 +249,178 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })();
     
+    return true;
+  }
+  
+  // ========== RECORDING MESSAGE HANDLERS ==========
+  
+  // Initialize recording state (called when exam starts)
+  if (message.type === "INIT_RECORDING") {
+    console.log("🎬 Initializing recording state:", message);
+    
+    (async () => {
+      try {
+        const result = await recordingManager.initRecording(message.roomId, message.studentId);
+        sendResponse({ success: true, ...result });
+      } catch (error) {
+        console.error("❌ Recording init error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
+  // Add event marker to recording timeline
+  if (message.type === "ADD_RECORDING_EVENT") {
+    console.log("📌 Adding event to recording:", message);
+    
+    try {
+      const event = recordingManager.addEvent(message.eventType, message.details);
+      sendResponse({ success: true, event });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
+    }
+    
+    return true;
+  }
+  
+  // Register a recorded chunk (called from content script after chunk is recorded)
+  if (message.type === "REGISTER_CHUNK") {
+    console.log("💾 Registering chunk:", message.chunkIndex);
+    
+    (async () => {
+      try {
+        // Convert base64 to blob
+        const response = await fetch(message.blobDataUrl);
+        const blob = await response.blob();
+        
+        const chunkData = await recordingManager.registerChunk(
+          message.chunkIndex,
+          message.startTime,
+          message.endTime,
+          message.duration,
+          blob
+        );
+        
+        sendResponse({ success: true, chunkId: chunkData.chunkId, sizeBytes: chunkData.sizeBytes });
+      } catch (error) {
+        console.error("❌ Chunk registration error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
+  // Stop recording
+  if (message.type === "STOP_RECORDING") {
+    console.log("⏹️ Stopping recording:", message);
+    
+    (async () => {
+      try {
+        const result = await recordingManager.stopRecording();
+        sendResponse({ success: true, ...result });
+      } catch (error) {
+        console.error("❌ Stop recording error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
+  // Get available chunks list (for examiner request)
+  if (message.type === "GET_CHUNK_LIST") {
+    console.log("📋 Getting chunk list");
+    
+    (async () => {
+      try {
+        const chunks = await recordingManager.getChunkList();
+        sendResponse({ success: true, chunks });
+      } catch (error) {
+        console.error("❌ Get chunk list error:", error);
+        sendResponse({ success: false, error: error.message, chunks: [] });
+      }
+    })();
+    
+    return true;
+  }
+  
+  // Upload specific chunk (triggered by examiner request)
+  if (message.type === "UPLOAD_CHUNK") {
+    console.log("📤 Uploading chunk:", message.chunkIndex);
+    
+    (async () => {
+      try {
+        const chunk = await recordingManager.getChunkForUpload(message.chunkIndex);
+        
+        // Create FormData for upload
+        const formData = new FormData();
+        formData.append('recording', chunk.blob, `chunk_${chunk.chunkIndex}.webm`);
+        formData.append('roomId', chunk.roomId);
+        formData.append('studentId', chunk.studentId);
+        formData.append('chunkIndex', chunk.chunkIndex.toString());
+        formData.append('startTime', chunk.startTime);
+        formData.append('endTime', chunk.endTime);
+        formData.append('duration', chunk.duration.toString());
+        formData.append('events', JSON.stringify(chunk.events || []));
+        formData.append('requestId', message.requestId || '');
+        
+        console.log(`📤 Uploading chunk ${chunk.chunkIndex} (${(chunk.sizeBytes / 1024 / 1024).toFixed(2)} MB)...`);
+        
+        // Upload to server
+        const response = await fetch(`${API_BASE_URL}/api/recordings/upload`, {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Upload failed: ${response.status} - ${errorText}`);
+        }
+        
+        const result = await response.json();
+        
+        // Mark chunk as uploaded in IndexedDB
+        await recordingManager.markChunkUploaded(chunk.chunkId, result.url);
+        
+        console.log(`✅ Chunk ${chunk.chunkIndex} uploaded successfully:`, result.url);
+        sendResponse({ success: true, ...result, chunkId: chunk.chunkId });
+      } catch (error) {
+        console.error("❌ Chunk upload error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
+  // Schedule cleanup (called when exam ends)
+  if (message.type === "SCHEDULE_CLEANUP") {
+    console.log("🗑️ Scheduling cleanup for room:", message.roomId);
+    
+    const result = recordingManager.scheduleCleanup(
+      message.roomId, 
+      message.delayMs || RECORDING_CONFIG.CLEANUP_DELAY_MS
+    );
+    sendResponse({ success: true, ...result });
+    return true;
+  }
+  
+  // Cancel cleanup (if examiner requests more chunks before cleanup happens)
+  if (message.type === "CANCEL_CLEANUP") {
+    console.log("🚫 Cancelling cleanup for room:", message.roomId);
+    
+    const cancelled = recordingManager.cancelCleanup(message.roomId);
+    sendResponse({ success: true, cancelled });
+    return true;
+  }
+  
+  // Get recording state (for debugging)
+  if (message.type === "GET_RECORDING_STATE") {
+    const state = recordingManager.getState();
+    sendResponse({ success: true, ...state });
     return true;
   }
   

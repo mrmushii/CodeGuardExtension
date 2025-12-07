@@ -68,6 +68,19 @@ window.addEventListener("message", (event) => {
       console.log(`📤 Forwarding ${message.type} to background script...`);
       console.log(`🔍 Full message payload:`, JSON.stringify(message, null, 2));
       
+      // Check if chrome.runtime is available (can be undefined if extension context invalidated)
+      if (!chrome?.runtime?.sendMessage) {
+        console.warn("⚠️ Chrome runtime not available, extension may need to be reloaded");
+        window.postMessage({
+          target: "CODEGUARD_WEB_APP",
+          type: "RESPONSE",
+          originalType: message.type,
+          success: false,
+          error: "Extension context invalidated. Please reload the extension."
+        }, window.location.origin);
+        return;
+      }
+      
       // Use try-catch to handle potential errors
       try {
         chrome.runtime.sendMessage(message, (response) => {
