@@ -9,9 +9,9 @@
  * You must update this value manually when switching environments.
  * Also update the host_permissions in manifest.json to match.
  */
-const API_BASE_URL = "http://localhost:3000";
+//const API_BASE_URL = "http://localhost:3000";
 // For production, use:
-// const API_BASE_URL = "https://codeguardserverside.onrender.com";
+const API_BASE_URL = "https://codeguardserverside.onrender.com";
 
 // Import recording manager (ES6 module - requires "type": "module" in manifest)
 import { recordingManager, RECORDING_CONFIG } from './recording.js';
