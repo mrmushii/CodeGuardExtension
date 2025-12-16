@@ -1,20 +1,35 @@
 /**
- * API Base URL Configuration
+ * API Base URL Configuration - Auto-Detection Mode
  * 
- * To switch between localhost and live server:
- * - Localhost: Change to "http://localhost:3000"
- * - Live Server: Change to "https://codeguardserverside.onrender.com"
+ * The extension automatically detects the environment based on which site it's running on:
+ * - localhost:5173 → Uses http://localhost:3000 API
+ * - code-guard-six.vercel.app → Uses https://codeguardserverside.onrender.com API
  * 
- * Note: Chrome extensions cannot use environment variables directly.
- * You must update this value manually when switching environments.
- * Also update the host_permissions in manifest.json to match.
+ * No manual switching required!
  */
-//const API_BASE_URL = "http://localhost:3000";
-// For production, use:
-const API_BASE_URL = "https://codeguardserverside.onrender.com";
+
+// Import configuration module for dynamic environment detection
+import { 
+  getCachedApiBaseUrl, 
+  updateEnvironmentFromUrl, 
+  initializeFromStorage,
+  saveToStorage,
+  CONFIG 
+} from './config.js';
 
 // Import recording manager (ES6 module - requires "type": "module" in manifest)
 import { recordingManager, RECORDING_CONFIG } from './recording.js';
+
+// Initialize environment on service worker start
+initializeFromStorage().then(() => {
+  console.log('🚀 CodeGuard Extension initialized');
+  console.log(`   Current API: ${getCachedApiBaseUrl()}`);
+});
+
+// Helper function to get current API URL (uses cached value)
+function getApiBaseUrl() {
+  return getCachedApiBaseUrl();
+}
 
 // Removed automatic whitelist refresh - now updates happen via socket events
 // Whitelist is fetched once when exam starts and refreshed when examiner adds/removes sites
@@ -32,6 +47,19 @@ function stopWhitelistRefresh() {
 // --- 1. Listen for Messages from Content Script ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("📨 Message received:", message.type, message);
+  
+  // ========== AUTO-DETECT ENVIRONMENT ==========
+  // Detect environment based on the sender's tab URL
+  if (sender?.tab?.url) {
+    updateEnvironmentFromUrl(sender.tab.url);
+    saveToStorage(); // Persist for service worker restart
+    console.log(`🌐 Environment detected from: ${sender.tab.url}`);
+  } else if (sender?.url) {
+    // Fallback to sender URL if tab URL not available
+    updateEnvironmentFromUrl(sender.url);
+    saveToStorage();
+  }
+  // ==============================================
   
   if (message.type === "START_EXAM") {
     console.log("📘 Exam initialization:", message);
@@ -227,7 +255,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log("📤 Sending paste violation to backend:", payload);
         
         // Send to backend
-        const response = await fetch(`${API_BASE_URL}/api/proctoring/flag`, {
+        const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -370,7 +398,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log(`📤 Uploading chunk ${chunk.chunkIndex} (${(chunk.sizeBytes / 1024 / 1024).toFixed(2)} MB)...`);
         
         // Upload to server
-        const response = await fetch(`${API_BASE_URL}/api/recordings/upload`, {
+        const response = await fetch(`${getApiBaseUrl()}/api/recordings/upload`, {
           method: 'POST',
           body: formData
         });
@@ -468,7 +496,7 @@ async function fetchWhitelist(roomId) {
       return;
     }
 
-    const res = await fetch(`${API_BASE_URL}/api/proctoring/whitelist?roomId=${encodeURIComponent(roomId)}`);
+    const res = await fetch(`${getApiBaseUrl()}/api/proctoring/whitelist?roomId=${encodeURIComponent(roomId)}`);
     
     if (!res.ok) {
       // If endpoint doesn't exist (404) or other error, fall back to default whitelist
@@ -754,7 +782,7 @@ async function handleFlaggedSite(tabId, blockedUrl) {
     });
 
     // ✅ Send the report to backend
-    const response = await fetch(`${API_BASE_URL}/api/proctoring/flag`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -781,7 +809,7 @@ async function checkForUpdates() {
     
     console.log(`🔍 Checking for updates... Current version: ${currentVersion}`);
     
-    const response = await fetch(`${API_BASE_URL}/extension/version.json`);
+    const response = await fetch(`${getApiBaseUrl()}/extension/version.json`);
     if (!response.ok) return;
     
     const data = await response.json();
