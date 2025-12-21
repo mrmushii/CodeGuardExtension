@@ -333,7 +333,27 @@ class RecordingManager {
   // ========== CHUNK RETRIEVAL FOR UPLOAD ==========
   
   async getChunkForUpload(chunkIndex) {
-    const chunks = await this.getChunksByRoom(this.examRoomId);
+    // Get roomId from chrome.storage if not in memory (service worker may have restarted)
+    let roomId = this.examRoomId;
+    
+    if (!roomId) {
+      try {
+        const stored = await chrome.storage.local.get(['roomId']);
+        roomId = stored.roomId;
+        if (roomId) {
+          this.examRoomId = roomId;
+          console.log('📦 Restored roomId from storage for upload:', roomId);
+        }
+      } catch (err) {
+        console.warn('⚠️ Could not get roomId from storage:', err.message);
+      }
+    }
+    
+    if (!roomId) {
+      throw new Error('No active exam room - cannot upload chunk');
+    }
+    
+    const chunks = await this.getChunksByRoom(roomId);
     const chunk = chunks.find(c => c.chunkIndex === chunkIndex);
     
     if (!chunk) {
@@ -364,12 +384,31 @@ class RecordingManager {
   }
 
   async getChunkList() {
-    if (!this.examRoomId) {
-      console.warn('⚠️ No active exam room');
+    // Get roomId from chrome.storage if not in memory (service worker may have restarted)
+    let roomId = this.examRoomId;
+    
+    if (!roomId) {
+      try {
+        const stored = await chrome.storage.local.get(['roomId']);
+        roomId = stored.roomId;
+        console.log('📦 Retrieved roomId from storage:', roomId);
+        
+        // Restore state if we got roomId from storage
+        if (roomId) {
+          this.examRoomId = roomId;
+        }
+      } catch (err) {
+        console.warn('⚠️ Could not get roomId from storage:', err.message);
+      }
+    }
+    
+    if (!roomId) {
+      console.warn('⚠️ No active exam room for getChunkList');
       return [];
     }
     
-    const chunks = await this.getChunksByRoom(this.examRoomId);
+    const chunks = await this.getChunksByRoom(roomId);
+    console.log(`📋 Found ${chunks.length} chunks for room ${roomId}`);
     
     // Return metadata only (without blob data for smaller payload)
     return chunks.map(chunk => ({
