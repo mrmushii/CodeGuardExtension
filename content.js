@@ -1,5 +1,57 @@
 console.log("!!! CONTENT SCRIPT IS RUNNING !!!");
 
+// Helper function to check if extension context is still valid
+function isExtensionContextValid() {
+  try {
+    // Try to access chrome.runtime.id - this will throw if context is invalidated
+    return !!(chrome && chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    return false;
+  }
+}
+
+// Safe message sender that handles context invalidation
+function safeSendMessage(message, callback) {
+  // First check if context is valid
+  if (!isExtensionContextValid()) {
+    console.warn("⚠️ Extension context invalidated - please refresh the page");
+    if (callback) {
+      callback({ success: false, error: "Extension context invalidated. Please refresh the page." });
+    }
+    return false;
+  }
+  
+  try {
+    chrome.runtime.sendMessage(message, (response) => {
+      // Check lastError inside callback (this is where the error often occurs)
+      if (chrome.runtime.lastError) {
+        const errorMsg = chrome.runtime.lastError.message;
+        console.warn("⚠️ Message send error:", errorMsg);
+        
+        // Check if it's a context invalidation error
+        if (errorMsg.includes("context invalidated") || errorMsg.includes("Extension context")) {
+          console.error("❌ Extension context was invalidated. Please refresh the page.");
+        }
+        
+        if (callback) {
+          callback({ success: false, error: errorMsg });
+        }
+      } else {
+        if (callback) {
+          callback({ success: true, response });
+        }
+      }
+    });
+    return true;
+  } catch (err) {
+    console.error("❌ Exception sending message:", err.message);
+    if (callback) {
+      callback({ success: false, error: err.message });
+    }
+    return false;
+  }
+}
+
 function attemptStart() {
   console.log("Attempting to get session data...");
 
@@ -12,27 +64,20 @@ function attemptStart() {
   if (studentId && roomId) {
     console.log("SUCCESS: Data found. Sending START_EXAM message to background.js");
 
-    try {
-      chrome.runtime.sendMessage(
-        {
-          type: "START_EXAM",
-          studentId,
-          roomId
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            console.warn(
-              "Error sending message to background script:",
-              chrome.runtime.lastError.message
-            );
-          } else {
-            console.log("START_EXAM message acknowledged by background:", response);
-          }
+    safeSendMessage(
+      {
+        type: "START_EXAM",
+        studentId,
+        roomId
+      },
+      (result) => {
+        if (result.success) {
+          console.log("START_EXAM message acknowledged by background:", result.response);
+        } else {
+          console.warn("Error sending message to background script:", result.error);
         }
-      );
-    } catch (err) {
-      console.error("Unexpected error while sending message:", err);
-    }
+      }
+    );
 
     return true;
   } else {
@@ -68,58 +113,32 @@ window.addEventListener("message", (event) => {
       console.log(`📤 Forwarding ${message.type} to background script...`);
       console.log(`🔍 Full message payload:`, JSON.stringify(message, null, 2));
       
-      // Check if chrome.runtime is available (can be undefined if extension context invalidated)
-      if (!chrome?.runtime?.sendMessage) {
-        console.warn("⚠️ Chrome runtime not available, extension may need to be reloaded");
-        window.postMessage({
-          target: "CODEGUARD_WEB_APP",
-          type: "RESPONSE",
-          originalType: message.type,
-          success: false,
-          error: "Extension context invalidated. Please reload the extension."
-        }, window.location.origin);
-        return;
-      }
-      
-      // Use try-catch to handle potential errors
-      try {
-        chrome.runtime.sendMessage(message, (response) => {
-          if (chrome.runtime.lastError) {
-            console.error("❌ Error forwarding message:", chrome.runtime.lastError.message);
-            
-            // Send error response back to page
-            window.postMessage({
-              target: "CODEGUARD_WEB_APP",
-              type: "RESPONSE",
-              originalType: message.type,
-              success: false,
-              error: chrome.runtime.lastError.message
-            }, window.location.origin);
-          } else {
-            console.log("✅ Message forwarded successfully, response:", response);
-            
-            // Send success response back to page
-            window.postMessage({
-              target: "CODEGUARD_WEB_APP",
-              type: "RESPONSE",
-              originalType: message.type,
-              success: true,
-              response: response
-            }, window.location.origin);
-          }
-        });
-      } catch (err) {
-        console.error("❌ Exception when sending message:", err);
-        
-        // Send error response back to page
-        window.postMessage({
-          target: "CODEGUARD_WEB_APP",
-          type: "RESPONSE",
-          originalType: message.type,
-          success: false,
-          error: err.message
-        }, window.location.origin);
-      }
+      // Use safeSendMessage to handle context invalidation gracefully
+      safeSendMessage(message, (result) => {
+        if (result.success) {
+          console.log("✅ Message forwarded successfully, response:", result.response);
+          
+          // Send success response back to page
+          window.postMessage({
+            target: "CODEGUARD_WEB_APP",
+            type: "RESPONSE",
+            originalType: message.type,
+            success: true,
+            response: result.response
+          }, window.location.origin);
+        } else {
+          console.error("❌ Error forwarding message:", result.error);
+          
+          // Send error response back to page
+          window.postMessage({
+            target: "CODEGUARD_WEB_APP",
+            type: "RESPONSE",
+            originalType: message.type,
+            success: false,
+            error: result.error
+          }, window.location.origin);
+        }
+      });
     } else {
       console.warn("⚠️ Received message without type:", event.data);
     }
@@ -147,19 +166,19 @@ function reportPasteViolation(violationType, details) {
     return;
   }
   
-  // Send violation to background script
-  chrome.runtime.sendMessage({
+  // Send violation to background script using safe sender
+  safeSendMessage({
     type: "PASTE_VIOLATION",
     studentId,
     roomId,
     violationType,
     details,
     timestamp: new Date().toISOString()
-  }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error("❌ Error reporting paste violation:", chrome.runtime.lastError.message);
+  }, (result) => {
+    if (result.success) {
+      console.log("✅ Paste violation reported:", result.response);
     } else {
-      console.log("✅ Paste violation reported:", response);
+      console.error("❌ Error reporting paste violation:", result.error);
     }
   });
 }
