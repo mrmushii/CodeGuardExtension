@@ -28,9 +28,11 @@ if (!fs.existsSync(OUTPUT_DIR)) {
 const FILES_TO_INCLUDE = [
   'manifest.json',
   'background.js',
+  'config.js',
   'content.js',
   'html2canvas.min.js',
   'recording.js',
+  'README.md',
 ];
 
 // Create temp directory for packaging
