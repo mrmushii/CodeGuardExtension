@@ -65,6 +65,136 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 });
 // ================================================
 
+// ========== OFFLINE FLAG QUEUE ==========
+// Queue flags locally when offline, sync when back online
+let flagQueue = [];
+let isSyncing = false;
+const MAX_QUEUE_SIZE = 50;  // Prevent memory issues
+const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000];  // Exponential backoff
+
+// Load queue from storage on startup
+async function loadFlagQueue() {
+  try {
+    const { offlineFlagQueue } = await chrome.storage.local.get(['offlineFlagQueue']);
+    if (offlineFlagQueue && Array.isArray(offlineFlagQueue)) {
+      flagQueue = offlineFlagQueue;
+      console.log(`📦 Loaded ${flagQueue.length} queued flags from storage`);
+    }
+  } catch (err) {
+    console.warn('⚠️ Failed to load flag queue:', err);
+  }
+}
+
+// Save queue to storage (persists through service worker restarts)
+async function saveFlagQueue() {
+  try {
+    await chrome.storage.local.set({ offlineFlagQueue: flagQueue });
+  } catch (err) {
+    console.warn('⚠️ Failed to save flag queue:', err);
+  }
+}
+
+// Add flag to queue
+async function queueFlag(payload) {
+  if (flagQueue.length >= MAX_QUEUE_SIZE) {
+    console.warn('⚠️ Flag queue full, dropping oldest flag');
+    flagQueue.shift();
+  }
+  
+  payload.queuedAt = new Date().toISOString();
+  flagQueue.push(payload);
+  await saveFlagQueue();
+  console.log(`📦 Flag queued (${flagQueue.length} total). Will sync when online.`);
+}
+
+// Send a single flag with retry
+async function sendFlagWithRetry(payload, retryIndex = 0) {
+  try {
+    const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    return { success: true };
+  } catch (err) {
+    // Retry with exponential backoff
+    if (retryIndex < RETRY_DELAYS.length) {
+      await new Promise(r => setTimeout(r, RETRY_DELAYS[retryIndex]));
+      return sendFlagWithRetry(payload, retryIndex + 1);
+    }
+    return { success: false, error: err.message };
+  }
+}
+
+// Sync all queued flags
+async function syncQueuedFlags() {
+  if (isSyncing || flagQueue.length === 0) return;
+  
+  isSyncing = true;
+  console.log(`🔄 Syncing ${flagQueue.length} queued flags...`);
+  
+  const successfulIndices = [];
+  
+  for (let i = 0; i < flagQueue.length; i++) {
+    const flag = flagQueue[i];
+    const result = await sendFlagWithRetry(flag);
+    
+    if (result.success) {
+      successfulIndices.push(i);
+      console.log(`✅ Synced queued flag ${i + 1}/${flagQueue.length}`);
+    } else {
+      console.warn(`❌ Failed to sync flag ${i + 1}, will retry later`);
+      break;  // Stop on first failure to maintain order
+    }
+  }
+  
+  // Remove successful flags from queue
+  if (successfulIndices.length > 0) {
+    flagQueue = flagQueue.filter((_, index) => !successfulIndices.includes(index));
+    await saveFlagQueue();
+    console.log(`📦 ${successfulIndices.length} flags synced, ${flagQueue.length} remaining`);
+  }
+  
+  isSyncing = false;
+}
+
+// Check if we're online and sync
+async function checkAndSync() {
+  try {
+    // Simple connectivity check
+    const response = await fetch(`${getApiBaseUrl()}/health`, { 
+      method: 'HEAD',
+      signal: AbortSignal.timeout(5000)
+    });
+    if (response.ok) {
+      await syncQueuedFlags();
+    }
+  } catch {
+    // Offline, will try again later
+  }
+}
+
+// Load queue on startup
+loadFlagQueue();
+
+// Periodic sync attempt (every 30 seconds during active exam)
+chrome.alarms.create('syncFlags', { periodInMinutes: 0.5 });
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'syncFlags') {
+    const { examActive } = await chrome.storage.local.get(['examActive']);
+    if (examActive && flagQueue.length > 0) {
+      await checkAndSync();
+    }
+  }
+});
+// ================================================
+
 // Initialize environment on service worker start
 initializeFromStorage().then(() => {
   console.log('🚀 CodeGuard Extension initialized');
@@ -831,23 +961,38 @@ async function handleFlaggedSite(tabId, blockedUrl) {
       screenshotDataLength: payload.screenshotData ? payload.screenshotData.length : 0,
     });
 
-    // ✅ Send the report to backend
-    const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    // ✅ Send the report to backend (with offline queue fallback)
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`❌ Flag report failed (${response.status}):`, errorText);
-      return;
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ Flag report failed (${response.status}):`, errorText);
+        // Queue for retry if server error (5xx)
+        if (response.status >= 500) {
+          await queueFlag(payload);
+        }
+        return;
+      }
+
+      const result = await response.json();
+      console.log(`✅ [${timestamp}] Flag report sent:`, result.message || result);
+      
+      // Try to sync any queued flags since we're online
+      if (flagQueue.length > 0) {
+        setTimeout(() => syncQueuedFlags(), 1000);
+      }
+    } catch (networkErr) {
+      // Network error - queue the flag for later
+      console.warn("📴 Network error sending flag, queuing for later:", networkErr.message);
+      await queueFlag(payload);
     }
-
-    const result = await response.json();
-    console.log(`✅ [${timestamp}] Flag report sent:`, result.message || result);
   } catch (err) {
-    console.error("❌ Error sending flag:", err);
+    console.error("❌ Error in handleFlaggedSite:", err);
   }
 }
 
