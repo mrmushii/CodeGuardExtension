@@ -20,6 +20,51 @@ import {
 // Import recording manager (ES6 module - requires "type": "module" in manifest)
 import { recordingManager, RECORDING_CONFIG } from './recording.js';
 
+// ========== SERVICE WORKER KEEP-ALIVE ==========
+// Chrome service workers go idle after ~30 seconds of inactivity
+// This keeps the worker alive during active exams to prevent message loss
+let keepAliveInterval = null;
+
+function startKeepAlive() {
+  if (keepAliveInterval) return; // Already running
+  
+  console.log("💓 Starting service worker keep-alive...");
+  keepAliveInterval = setInterval(async () => {
+    try {
+      const { examActive } = await chrome.storage.local.get(['examActive']);
+      if (examActive) {
+        console.log('💓 Service worker heartbeat - exam active');
+      } else {
+        console.log('💤 Exam not active, stopping keep-alive');
+        stopKeepAlive();
+      }
+    } catch (err) {
+      console.warn('⚠️ Keep-alive check failed:', err);
+    }
+  }, 25000); // Every 25 seconds (before 30s timeout)
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+    console.log("💤 Service worker keep-alive stopped");
+  }
+}
+
+// Also use chrome.alarms as backup for longer periods
+chrome.alarms.create('keepAlive', { periodInMinutes: 0.4 }); // ~24 seconds
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'keepAlive') {
+    const { examActive } = await chrome.storage.local.get(['examActive']);
+    if (examActive) {
+      console.log('⏰ Alarm keep-alive ping - exam active');
+    }
+  }
+});
+// ================================================
+
 // Initialize environment on service worker start
 initializeFromStorage().then(() => {
   console.log('🚀 CodeGuard Extension initialized');
@@ -139,6 +184,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           console.warn("⚠️ No roomId found in storage when starting exam");
         }
         
+        // ✅ Start service worker keep-alive to prevent idle timeout
+        startKeepAlive();
+        
         // Final verification before sending response
         const finalCheck = await chrome.storage.local.get(["examActive"]);
         console.log("🔍 Final verification - examActive:", finalCheck.examActive);
@@ -167,8 +215,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       examActive: false,
     });
     
-    // Stop whitelist refresh
+    // Stop whitelist refresh and keep-alive
     stopWhitelistRefresh();
+    stopKeepAlive();
     
     sendResponse({ success: true, message: "Exam ended, monitoring stopped" });
     return true;
@@ -180,8 +229,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Clear all exam-related data
     chrome.storage.local.remove(["examActive", "roomId", "studentId", "studentName"]);
     
-    // Stop whitelist refresh
+    // Stop whitelist refresh and keep-alive
     stopWhitelistRefresh();
+    stopKeepAlive();
     
     sendResponse({ success: true, message: "Monitoring stopped" });
     return true;

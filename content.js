@@ -52,6 +52,11 @@ function safeSendMessage(message, callback) {
   }
 }
 
+// ========== ENHANCED SESSION MONITORING ==========
+// Track last known session state to detect changes
+let lastSessionState = { studentId: null, roomId: null };
+let sessionMonitorInterval = null;
+
 function attemptStart() {
   console.log("Attempting to get session data...");
 
@@ -62,22 +67,31 @@ function attemptStart() {
   console.log("Room ID found:", roomId);
 
   if (studentId && roomId) {
-    console.log("SUCCESS: Data found. Sending START_EXAM message to background.js");
+    // Check if this is new session data (not already sent)
+    const isNewSession = studentId !== lastSessionState.studentId || 
+                         roomId !== lastSessionState.roomId;
+    
+    if (isNewSession) {
+      console.log("SUCCESS: New session data found. Sending START_EXAM message to background.js");
+      lastSessionState = { studentId, roomId };
 
-    safeSendMessage(
-      {
-        type: "START_EXAM",
-        studentId,
-        roomId
-      },
-      (result) => {
-        if (result.success) {
-          console.log("START_EXAM message acknowledged by background:", result.response);
-        } else {
-          console.warn("Error sending message to background script:", result.error);
+      safeSendMessage(
+        {
+          type: "START_EXAM",
+          studentId,
+          roomId
+        },
+        (result) => {
+          if (result.success) {
+            console.log("START_EXAM message acknowledged by background:", result.response);
+          } else {
+            console.warn("Error sending message to background script:", result.error);
+          }
         }
-      }
-    );
+      );
+    } else {
+      console.log("Session data unchanged, skipping duplicate send");
+    }
 
     return true;
   } else {
@@ -85,6 +99,32 @@ function attemptStart() {
     return false;
   }
 }
+
+// Continuous session monitoring - catches session changes without page refresh
+function startSessionMonitor() {
+  if (sessionMonitorInterval) return; // Already running
+  
+  console.log("📋 Starting continuous session monitor...");
+  sessionMonitorInterval = setInterval(() => {
+    const studentId = sessionStorage.getItem("studentId");
+    const roomId = sessionStorage.getItem("roomId");
+    
+    // Detect new or changed session data
+    if (studentId && roomId) {
+      const isNew = studentId !== lastSessionState.studentId || 
+                    roomId !== lastSessionState.roomId;
+      
+      if (isNew) {
+        console.log("📋 Session data change detected via monitor!");
+        attemptStart();
+      }
+    }
+  }, 500); // Check every 500ms for quick detection
+}
+
+// Start the continuous monitor immediately
+startSessionMonitor();
+// ===================================================
 
 // Listen for messages from the web page (React app)
 window.addEventListener("message", (event) => {
