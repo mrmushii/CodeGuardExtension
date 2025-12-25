@@ -20,6 +20,9 @@ import {
 // Import recording manager (ES6 module - requires "type": "module" in manifest)
 import { recordingManager, RECORDING_CONFIG } from './recording.js';
 
+// Import screen recorder for desktop capture
+import { screenRecorder } from './screenRecorder.js';
+
 // ========== SERVICE WORKER KEEP-ALIVE ==========
 // Chrome service workers go idle after ~30 seconds of inactivity
 // This keeps the worker alive during active exams to prevent message loss
@@ -402,32 +405,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     (async () => {
       try {
-        const { roomId, studentId, examName } = message;
+        const { roomId, studentId, studentName, examName } = message;
         
         if (!roomId || !studentId) {
           sendResponse({ success: false, error: "Missing roomId or studentId" });
           return;
         }
         
-        // Save recording info to storage
-        await chrome.storage.local.set({
-          recordingActive: true,
-          recordingRoomId: roomId,
-          recordingStudentId: studentId,
-          recordingExamName: examName || 'Exam',
-          recordingStartTime: Date.now()
-        });
+        // Start screen recording with desktop capture
+        const result = await screenRecorder.startRecording(
+          { roomId, studentId, studentName, examName },
+          sender.tab?.id
+        );
         
-        // Initialize recording manager
-        await recordingManager.initRecording(roomId, studentId);
+        if (result.success) {
+          // Also initialize the old recording manager for event tracking
+          await recordingManager.initRecording(roomId, studentId);
+        }
         
-        console.log("🎬 Recording initialized via extension");
-        sendResponse({ 
-          success: true, 
-          message: "Recording started", 
-          isRecording: true,
-          startTime: Date.now()
-        });
+        console.log("🎬 Screen recording result:", result);
+        sendResponse(result);
         
       } catch (error) {
         console.error("❌ Failed to start recording:", error);
@@ -443,21 +440,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     (async () => {
       try {
-        // Stop recording manager
-        const result = await recordingManager.stopRecording();
+        // Stop screen recorder (saves to Downloads)
+        const result = await screenRecorder.stopRecording();
         
-        // Clear recording state
-        await chrome.storage.local.set({
-          recordingActive: false,
-          recordingEndTime: Date.now()
-        });
+        // Also stop the old recording manager for event tracking
+        await recordingManager.stopRecording();
         
-        console.log("⏹️ Recording stopped. Total chunks:", result.totalChunks);
-        sendResponse({ 
-          success: true, 
-          message: "Recording stopped",
-          totalChunks: result.totalChunks
-        });
+        console.log("⏹️ Recording stopped and saved to Downloads:", result);
+        sendResponse(result);
         
       } catch (error) {
         console.error("❌ Failed to stop recording:", error);
@@ -473,22 +463,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     (async () => {
       try {
-        const state = recordingManager.getState();
-        const stored = await chrome.storage.local.get(['recordingActive', 'recordingStartTime']);
-        
-        const duration = stored.recordingActive && stored.recordingStartTime 
-          ? Math.floor((Date.now() - stored.recordingStartTime) / 1000)
-          : 0;
+        // Get status from screen recorder
+        const status = screenRecorder.getStatus();
         
         sendResponse({
           success: true,
-          isRecording: state.isRecording || stored.recordingActive,
-          duration,
-          chunksCount: state.chunksCount
+          ...status
         });
         
       } catch (error) {
         console.error("❌ Failed to get recording status:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
+  // Handle video chunk data from website
+  if (message.type === "VIDEO_CHUNK") {
+    console.log("📹 VIDEO_CHUNK received:", message.chunkSize, "bytes");
+    
+    (async () => {
+      try {
+        // Convert base64 back to blob
+        const response = await fetch(message.dataUrl);
+        const blob = await response.blob();
+        
+        // Process the chunk
+        await screenRecorder.processVideoChunk(blob);
+        
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error("❌ Failed to process video chunk:", error);
         sendResponse({ success: false, error: error.message });
       }
     })();

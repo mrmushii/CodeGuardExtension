@@ -10,7 +10,9 @@
     "unlimitedStorage",
     "alarms",
     "desktopCapture",
-    "offscreen"
+    "offscreen",
+    "downloads",
+    "tabCapture"
   ],
 
   "host_permissions": [
