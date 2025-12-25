@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Code-Guard Proctor",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Monitors and reports student browsing activity during Code-Guard exams. Includes screen recording for integrity verification.",
 
   "permissions": [
     "tabs",
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "alarms"
   ],
 
   "host_permissions": [
