@@ -394,6 +394,109 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
+  // ========== SCREEN RECORDING HANDLERS ==========
+  // These handlers control full-screen recording triggered from the PiP UI
+  
+  if (message.type === "START_SCREEN_RECORDING") {
+    console.log("🎬 START_SCREEN_RECORDING received:", message);
+    
+    (async () => {
+      try {
+        const { roomId, studentId, examName } = message;
+        
+        if (!roomId || !studentId) {
+          sendResponse({ success: false, error: "Missing roomId or studentId" });
+          return;
+        }
+        
+        // Save recording info to storage
+        await chrome.storage.local.set({
+          recordingActive: true,
+          recordingRoomId: roomId,
+          recordingStudentId: studentId,
+          recordingExamName: examName || 'Exam',
+          recordingStartTime: Date.now()
+        });
+        
+        // Initialize recording manager
+        await recordingManager.initRecording(roomId, studentId);
+        
+        console.log("🎬 Recording initialized via extension");
+        sendResponse({ 
+          success: true, 
+          message: "Recording started", 
+          isRecording: true,
+          startTime: Date.now()
+        });
+        
+      } catch (error) {
+        console.error("❌ Failed to start recording:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
+  if (message.type === "STOP_SCREEN_RECORDING") {
+    console.log("⏹️ STOP_SCREEN_RECORDING received:", message);
+    
+    (async () => {
+      try {
+        // Stop recording manager
+        const result = await recordingManager.stopRecording();
+        
+        // Clear recording state
+        await chrome.storage.local.set({
+          recordingActive: false,
+          recordingEndTime: Date.now()
+        });
+        
+        console.log("⏹️ Recording stopped. Total chunks:", result.totalChunks);
+        sendResponse({ 
+          success: true, 
+          message: "Recording stopped",
+          totalChunks: result.totalChunks
+        });
+        
+      } catch (error) {
+        console.error("❌ Failed to stop recording:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  
+  if (message.type === "GET_RECORDING_STATUS") {
+    console.log("📊 GET_RECORDING_STATUS received");
+    
+    (async () => {
+      try {
+        const state = recordingManager.getState();
+        const stored = await chrome.storage.local.get(['recordingActive', 'recordingStartTime']);
+        
+        const duration = stored.recordingActive && stored.recordingStartTime 
+          ? Math.floor((Date.now() - stored.recordingStartTime) / 1000)
+          : 0;
+        
+        sendResponse({
+          success: true,
+          isRecording: state.isRecording || stored.recordingActive,
+          duration,
+          chunksCount: state.chunksCount
+        });
+        
+      } catch (error) {
+        console.error("❌ Failed to get recording status:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    
+    return true;
+  }
+  // ================================================
+  
   if (message.type === "PASTE_VIOLATION") {
     console.log("📘 Paste violation reported:", message);
     
