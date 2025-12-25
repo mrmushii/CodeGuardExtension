@@ -1,36 +1,30 @@
 /**
  * Screen Recorder for CodeGuard Extension
  * 
+ * This module receives video chunks from the website and saves to Downloads.
+ * The website handles the actual screen capture via getDisplayMedia().
+ * 
  * Features:
- * - Full desktop capture using chrome.desktopCapture
- * - Saves recordings to Downloads folder
- * - Chunked recording (30-second segments for crash protection)
- * - Merges chunks into final video on exam end
+ * - Receives video chunks from website
+ * - Saves merged recording to Downloads folder
+ * - No extra user prompt needed (uses existing screen share)
  */
 
-const CHUNK_INTERVAL_MS = 30000; // 30 seconds per chunk
-const VIDEO_BITRATE = 1000000; // 1 Mbps
-const MIME_TYPE = 'video/webm;codecs=vp9';
+const MIME_TYPE = 'video/webm';
 
 class ScreenRecorder {
   constructor() {
-    this.mediaRecorder = null;
-    this.stream = null;
-    this.chunks = [];
-    this.chunkCount = 0;
     this.isRecording = false;
     this.startTime = null;
     this.examInfo = null;
-    this.chunkInterval = null;
     this.recordedBlobs = [];
   }
 
   /**
-   * Start recording the desktop
-   * @param {Object} examInfo - { roomId, studentId, studentName, examName }
-   * @param {number} tabId - The tab ID that initiated the recording
+   * Start receiving recording chunks
+   * Called when website starts screen sharing
    */
-  async startRecording(examInfo, tabId) {
+  async startRecording(examInfo) {
     if (this.isRecording) {
       console.warn('⚠️ Recording already in progress');
       return { success: false, error: 'Already recording' };
@@ -38,58 +32,23 @@ class ScreenRecorder {
 
     this.examInfo = examInfo;
     this.startTime = Date.now();
-    this.chunks = [];
-    this.chunkCount = 0;
     this.recordedBlobs = [];
+    this.isRecording = true;
 
-    try {
-      // Use chrome.desktopCapture to get desktop stream
-      console.log('🖥️ Requesting desktop capture...');
-      
-      const streamId = await new Promise((resolve, reject) => {
-        chrome.desktopCapture.chooseDesktopMedia(
-          ['screen', 'window'],
-          (streamId) => {
-            if (streamId) {
-              resolve(streamId);
-            } else {
-              reject(new Error('User cancelled desktop capture'));
-            }
-          }
-        );
-      });
+    // Save state to storage
+    await chrome.storage.local.set({
+      recordingActive: true,
+      recordingStartTime: this.startTime,
+      recordingExamInfo: examInfo
+    });
 
-      console.log('✅ Got stream ID:', streamId);
-
-      // We need an offscreen document to use getUserMedia
-      // For now, we'll use the tab's stream that was already shared
-      // The website already gets the stream via getDisplayMedia()
-      
-      // Instead, let's use the stream from the content/website
-      // and just manage the recording here
-      
-      this.isRecording = true;
-      
-      // Save state to storage
-      await chrome.storage.local.set({
-        recordingActive: true,
-        recordingStartTime: this.startTime,
-        recordingExamInfo: examInfo
-      });
-
-      console.log('🎬 Screen recording started');
-      return { 
-        success: true, 
-        message: 'Recording started',
-        isRecording: true,
-        startTime: this.startTime
-      };
-
-    } catch (error) {
-      console.error('❌ Failed to start recording:', error);
-      this.isRecording = false;
-      return { success: false, error: error.message };
-    }
+    console.log('🎬 Screen recording started - waiting for video chunks from website');
+    return { 
+      success: true, 
+      message: 'Recording started - capturing screen via website',
+      isRecording: true,
+      startTime: this.startTime
+    };
   }
 
   /**
@@ -97,12 +56,15 @@ class ScreenRecorder {
    * Called when the website sends video chunks
    */
   async processVideoChunk(blob) {
-    if (!this.isRecording) return;
+    if (!this.isRecording) {
+      console.warn('⚠️ Received chunk but not recording');
+      return;
+    }
     
     this.recordedBlobs.push(blob);
-    this.chunkCount++;
     
-    console.log(`📹 Received chunk ${this.chunkCount} (${(blob.size / 1024).toFixed(2)} KB)`);
+    const totalSize = this.recordedBlobs.reduce((sum, b) => sum + b.size, 0);
+    console.log(`📹 Chunk ${this.recordedBlobs.length} received (${(blob.size / 1024).toFixed(2)} KB, total: ${(totalSize / 1024 / 1024).toFixed(2)} MB)`);
   }
 
   /**
@@ -117,12 +79,6 @@ class ScreenRecorder {
     try {
       this.isRecording = false;
       
-      // Clear interval if any
-      if (this.chunkInterval) {
-        clearInterval(this.chunkInterval);
-        this.chunkInterval = null;
-      }
-
       // Update storage
       await chrome.storage.local.set({
         recordingActive: false,
@@ -133,16 +89,20 @@ class ScreenRecorder {
       
       console.log(`⏹️ Recording stopped. Duration: ${duration}s, Chunks: ${this.recordedBlobs.length}`);
       
-      // If we have recorded blobs, save them
+      // Save if we have recorded data
+      let saveResult = null;
       if (this.recordedBlobs.length > 0) {
-        await this.saveRecording();
+        saveResult = await this.saveRecording();
+      } else {
+        console.warn('⚠️ No video chunks received - nothing to save');
       }
 
       return { 
         success: true, 
-        message: 'Recording stopped',
+        message: saveResult?.success ? 'Recording saved to Downloads' : 'Recording stopped (no data)',
         duration,
-        chunksCount: this.recordedBlobs.length
+        chunksCount: this.recordedBlobs.length,
+        filename: saveResult?.filename
       };
 
     } catch (error) {
@@ -157,7 +117,7 @@ class ScreenRecorder {
   async saveRecording() {
     if (this.recordedBlobs.length === 0) {
       console.warn('⚠️ No recorded data to save');
-      return;
+      return { success: false, error: 'No data' };
     }
 
     try {
@@ -166,9 +126,11 @@ class ScreenRecorder {
       
       // Create filename
       const date = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const filename = `CodeGuard_${this.examInfo?.examName || 'Exam'}_${this.examInfo?.studentId || 'student'}_${date}.webm`;
+      const examName = (this.examInfo?.examName || 'Exam').replace(/[^a-zA-Z0-9]/g, '_');
+      const studentId = (this.examInfo?.studentId || 'student').replace(/[^a-zA-Z0-9]/g, '_');
+      const filename = `CodeGuard_${examName}_${studentId}_${date}.webm`;
       
-      // Convert blob to data URL
+      // Convert blob to data URL for chrome.downloads
       const reader = new FileReader();
       const dataUrl = await new Promise((resolve, reject) => {
         reader.onloadend = () => resolve(reader.result);
@@ -183,8 +145,10 @@ class ScreenRecorder {
         saveAs: false
       });
 
-      console.log(`💾 Recording saved to Downloads: ${filename} (ID: ${downloadId})`);
-      console.log(`   Size: ${(finalBlob.size / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`💾 Recording saved to Downloads!`);
+      console.log(`   📁 File: CodeGuard_Recordings/${filename}`);
+      console.log(`   📊 Size: ${(finalBlob.size / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`   🆔 Download ID: ${downloadId}`);
 
       // Clear recorded blobs
       this.recordedBlobs = [];

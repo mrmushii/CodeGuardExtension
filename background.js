@@ -412,10 +412,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
         
-        // Start screen recording with desktop capture
+        // Start screen recording (receives chunks from website)
         const result = await screenRecorder.startRecording(
-          { roomId, studentId, studentName, examName },
-          sender.tab?.id
+          { roomId, studentId, studentName, examName }
         );
         
         if (result.success) {
