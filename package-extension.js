@@ -32,6 +32,7 @@ const FILES_TO_INCLUDE = [
   'content.js',
   'html2canvas.min.js',
   'recording.js',
+  'screenRecorder.js',
   'README.md',
 ];
 

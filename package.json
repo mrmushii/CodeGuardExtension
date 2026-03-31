@@ -1,0 +1,26 @@
+{
+  "name": "chrome-manifest_extension",
+  "version": "1.0.0",
+  "description": "The CodeGuard Proctor extension is required for students to take exams. It monitors browsing activity to ensure exam integrity.",
+  "type": "module",
+  "main": "background.js",
+  "scripts": {
+    "build": "vite build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrmushii/CodeGuardExtension.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mrmushii/CodeGuardExtension/issues"
+  },
+  "homepage": "https://github.com/mrmushii/CodeGuardExtension#readme",
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.33",
+    "vite": "^8.0.3"
+  }
+}
