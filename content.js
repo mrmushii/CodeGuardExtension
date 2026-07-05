@@ -62,9 +62,11 @@ function attemptStart() {
 
   const studentId = sessionStorage.getItem("studentId");
   const roomId = sessionStorage.getItem("roomId");
+  const token = sessionStorage.getItem("cg_token");
 
   console.log("Student ID found:", studentId);
   console.log("Room ID found:", roomId);
+  console.log("Token found:", token ? "yes" : "no");
 
   if (studentId && roomId) {
     // Check if this is new session data (not already sent)
@@ -79,7 +81,8 @@ function attemptStart() {
         {
           type: "START_EXAM",
           studentId,
-          roomId
+          roomId,
+          token
         },
         (result) => {
           if (result.success) {
@@ -146,6 +149,19 @@ window.addEventListener("message", (event) => {
         target: "CODEGUARD_WEB_APP",
         type: "PONG"
       }, window.location.origin);
+      return;
+    }
+
+    // Handle SET_TOKEN message directly (sync token to background.js)
+    if (message && message.type === "SET_TOKEN") {
+      console.log("🔑 Received SET_TOKEN from page, forwarding to background...");
+      safeSendMessage(message, (result) => {
+        if (result.success) {
+          console.log("🔑 Token synced to background script");
+        } else {
+          console.error("❌ Token sync failed:", result.error);
+        }
+      });
       return;
     }
     

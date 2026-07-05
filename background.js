@@ -113,9 +113,10 @@ async function queueFlag(payload) {
 // Send a single flag with retry
 async function sendFlagWithRetry(payload, retryIndex = 0) {
   try {
+    const headers = await getAuthHeaders({ 'Content-Type': 'application/json' });
     const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify(payload)
     });
     
@@ -209,6 +210,15 @@ function getApiBaseUrl() {
   return getCachedApiBaseUrl();
 }
 
+async function getAuthHeaders(customHeaders = {}) {
+  const data = await chrome.storage.local.get("token");
+  const headers = { ...customHeaders };
+  if (data.token) {
+    headers["Authorization"] = `Bearer ${data.token}`;
+  }
+  return headers;
+}
+
 // Removed automatic whitelist refresh - now updates happen via socket events
 // Whitelist is fetched once when exam starts and refreshed when examiner adds/removes sites
 
@@ -239,6 +249,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   // ==============================================
   
+  if (message.type === "SET_TOKEN") {
+    console.log("🔑 Storing auth token in local storage:", message.token ? "present" : "absent");
+    chrome.storage.local.set({ token: message.token || null }, () => {
+      sendResponse({ success: true, message: "Token stored successfully" });
+    });
+    return true; // Keep message channel open for async response
+  }
+
   if (message.type === "START_EXAM") {
     console.log("📘 Exam initialization:", message);
 
@@ -248,6 +266,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       studentId: message.studentId,
       studentName: message.studentName || "Unknown Student",
       roomId: message.roomId,
+      token: message.token || null, // Save token if passed
       examActive: false, // Don't start monitoring until exam actually starts
     }, () => {
       console.log("✅ Student info saved to storage");
@@ -544,9 +563,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log("📤 Sending paste violation to backend:", payload);
         
         // Send to backend
+        const headers = await getAuthHeaders({ "Content-Type": "application/json" });
         const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: headers,
           body: JSON.stringify(payload),
         });
         
@@ -687,8 +707,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log(`📤 Uploading chunk ${chunk.chunkIndex} (${(chunk.sizeBytes / 1024 / 1024).toFixed(2)} MB)...`);
         
         // Upload to server
+        const headers = await getAuthHeaders();
         const response = await fetch(`${getApiBaseUrl()}/api/recordings/upload`, {
           method: 'POST',
+          headers: headers,
           body: formData
         });
         
@@ -785,7 +807,10 @@ async function fetchWhitelist(roomId) {
       return;
     }
 
-    const res = await fetch(`${getApiBaseUrl()}/api/proctoring/whitelist?roomId=${encodeURIComponent(roomId)}`);
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${getApiBaseUrl()}/api/proctoring/whitelist?roomId=${encodeURIComponent(roomId)}`, {
+      headers: headers
+    });
     
     if (!res.ok) {
       // If endpoint doesn't exist (404) or other error, fall back to default whitelist
@@ -1072,9 +1097,10 @@ async function handleFlaggedSite(tabId, blockedUrl) {
 
     // ✅ Send the report to backend (with offline queue fallback)
     try {
+      const headers = await getAuthHeaders({ "Content-Type": "application/json" });
       const response = await fetch(`${getApiBaseUrl()}/api/proctoring/flag`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: headers,
         body: JSON.stringify(payload),
       });
 
