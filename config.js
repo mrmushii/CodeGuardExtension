@@ -1,39 +1,27 @@
 /**
- * CodeGuard Extension - Dynamic Environment Configuration
- * 
- * This module automatically detects whether the extension is running
- * in development (localhost) or production (Vercel/Render) mode and
- * configures the API URLs accordingly.
- * 
- * How it works:
- * - The content script runs on both localhost:5173 and code-guard-six.vercel.app
- * - When messages come from the webpage, we check the origin
- * - Based on the origin, we switch between localhost and production APIs
+ * CodeGuard Extension - Environment Configuration
+ *
+ * LAN-first: the Server URL and Client URL are configured by the proctor via
+ * the extension Options page (chrome.storage.local). This lets one build run
+ * against localhost, a LAN server (e.g. http://192.168.1.50:3000), or a cloud
+ * deployment — without rebuilding. Falls back to localhost for development.
+ *
+ * All previously hardcoded Render/Vercel production URLs have been removed.
  */
 
-// ========== URL Configuration ==========
+// ========== Defaults (development) ==========
 
-// Development URLs (localhost)
-const DEV_CONFIG = {
+const DEFAULT_CONFIG = {
   CLIENT_URL: 'http://localhost:5173',
   API_BASE_URL: 'http://localhost:3000',
-  SOCKET_URL: 'http://localhost:3000'
+  SOCKET_URL: 'http://localhost:3000',
 };
 
-// Production URLs (deployed)
-const PROD_CONFIG = {
-  CLIENT_URL: 'https://code-guard-six.vercel.app',
-  API_BASE_URL: 'https://codeguardserverside.onrender.com',
-  SOCKET_URL: 'https://codeguardserverside.onrender.com'
-};
+// Back-compat alias (some callers still import DEV_CONFIG semantics).
+const DEV_CONFIG = DEFAULT_CONFIG;
 
 // ========== Environment Detection ==========
 
-/**
- * Detects if the current context is development based on the page URL
- * @param {string} url - The URL to check
- * @returns {boolean} - True if development environment
- */
 export function isDevEnvironment(url) {
   if (!url) return false;
   const lowerUrl = url.toLowerCase();
@@ -41,106 +29,96 @@ export function isDevEnvironment(url) {
 }
 
 /**
- * Gets the appropriate config based on the environment
- * @param {boolean} isDev - Whether we're in dev mode
- * @returns {Object} - Configuration object with URLs
+ * Returns the active config, preferring proctor-configured stored URLs.
+ * `isDev` is accepted for signature back-compat but no longer branches to a
+ * hardcoded production block.
  */
-export function getConfig(isDev) {
-  return isDev ? DEV_CONFIG : PROD_CONFIG;
+export function getConfig() {
+  return {
+    CLIENT_URL: storedClientUrl || DEFAULT_CONFIG.CLIENT_URL,
+    API_BASE_URL: cachedApiBaseUrl || DEFAULT_CONFIG.API_BASE_URL,
+    SOCKET_URL: cachedApiBaseUrl || DEFAULT_CONFIG.SOCKET_URL,
+  };
 }
 
-/**
- * Gets the API base URL for a given page URL
- * @param {string} pageUrl - The current page URL
- * @returns {string} - The API base URL to use
- */
 export function getApiBaseUrl(pageUrl) {
-  const isDev = isDevEnvironment(pageUrl);
-  const config = getConfig(isDev);
-  console.log(`🌐 Environment: ${isDev ? 'DEVELOPMENT' : 'PRODUCTION'}`);
-  console.log(`   API URL: ${config.API_BASE_URL}`);
-  return config.API_BASE_URL;
+  // Prefer the configured server URL; only fall back to localhost.
+  const url = cachedApiBaseUrl || DEFAULT_CONFIG.API_BASE_URL;
+  console.log(`🌐 CodeGuard API URL: ${url}${pageUrl ? ` (page: ${pageUrl})` : ''}`);
+  return url;
 }
 
-// ========== Cached Environment State ==========
+// ========== Cached State ==========
 
-// Default to production (safer fallback)
-let cachedApiBaseUrl = PROD_CONFIG.API_BASE_URL;
-let cachedEnvironment = 'production';
+let cachedApiBaseUrl = DEFAULT_CONFIG.API_BASE_URL;
+let cachedEnvironment = 'development';
+let storedClientUrl = DEFAULT_CONFIG.CLIENT_URL;
 
-/**
- * Updates the cached environment based on received page URL
- * Called when content script sends messages
- * @param {string} pageUrl - The page URL from the content script
- */
 export function updateEnvironmentFromUrl(pageUrl) {
   if (!pageUrl) return;
-  
-  const isDev = isDevEnvironment(pageUrl);
-  cachedApiBaseUrl = isDev ? DEV_CONFIG.API_BASE_URL : PROD_CONFIG.API_BASE_URL;
-  cachedEnvironment = isDev ? 'development' : 'production';
-  
-  console.log(`🔄 Environment updated: ${cachedEnvironment} -> ${cachedApiBaseUrl}`);
+  // Only used as a hint now; the configured server URL is authoritative.
+  cachedEnvironment = isDevEnvironment(pageUrl) ? 'development' : 'configured';
 }
 
-/**
- * Gets the cached API base URL
- * @returns {string} - The cached API base URL
- */
 export function getCachedApiBaseUrl() {
   return cachedApiBaseUrl;
 }
 
-/**
- * Gets the cached environment name
- * @returns {string} - 'development' or 'production'
- */
 export function getCachedEnvironment() {
   return cachedEnvironment;
 }
 
-// ========== Initialize from Storage ==========
+export function getClientUrl() {
+  return storedClientUrl;
+}
+
+// ========== Storage (proctor-configured URLs) ==========
 
 /**
- * Initialize environment from chrome.storage
- * This helps persist the environment across service worker restarts
+ * Load Server/Client URLs saved by the Options page. Keys:
+ *   serverUrl  → API + Socket base
+ *   clientUrl  → the CodeGuard web app origin (used to gate content.js)
+ * Also honors the legacy `apiBaseUrl` key.
  */
 export async function initializeFromStorage() {
   try {
-    const stored = await chrome.storage.local.get(['apiBaseUrl', 'environment']);
-    if (stored.apiBaseUrl) {
-      cachedApiBaseUrl = stored.apiBaseUrl;
-      cachedEnvironment = stored.environment || 'production';
-      console.log(`📦 Loaded from storage: ${cachedEnvironment} -> ${cachedApiBaseUrl}`);
-    }
+    const stored = await chrome.storage.local.get(['serverUrl', 'clientUrl', 'apiBaseUrl', 'environment']);
+    if (stored.serverUrl) cachedApiBaseUrl = stored.serverUrl;
+    else if (stored.apiBaseUrl) cachedApiBaseUrl = stored.apiBaseUrl;
+    if (stored.clientUrl) storedClientUrl = stored.clientUrl;
+    if (stored.environment) cachedEnvironment = stored.environment;
+    console.log(`📦 CodeGuard config loaded — server: ${cachedApiBaseUrl}, client: ${storedClientUrl}`);
   } catch (err) {
-    console.warn('⚠️ Could not load environment from storage:', err.message);
+    console.warn('⚠️ Could not load extension config from storage:', err.message);
   }
 }
 
-/**
- * Save current environment to chrome.storage
- */
 export async function saveToStorage() {
   try {
     await chrome.storage.local.set({
-      apiBaseUrl: cachedApiBaseUrl,
-      environment: cachedEnvironment
+      serverUrl: cachedApiBaseUrl,
+      clientUrl: storedClientUrl,
+      apiBaseUrl: cachedApiBaseUrl, // legacy key
+      environment: cachedEnvironment,
     });
-    console.log(`💾 Saved to storage: ${cachedEnvironment} -> ${cachedApiBaseUrl}`);
   } catch (err) {
-    console.warn('⚠️ Could not save environment to storage:', err.message);
+    console.warn('⚠️ Could not save extension config:', err.message);
   }
 }
 
-// ========== Export Configuration Constants ==========
+// React to Options-page changes without needing a reload.
+if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes.serverUrl?.newValue) cachedApiBaseUrl = changes.serverUrl.newValue;
+    if (changes.clientUrl?.newValue) storedClientUrl = changes.clientUrl.newValue;
+  });
+}
 
-export const CONFIG = {
-  DEV: DEV_CONFIG,
-  PROD: PROD_CONFIG
-};
+// ========== Exports ==========
 
-// Default export for convenience
+export const CONFIG = { DEV: DEFAULT_CONFIG, DEFAULT: DEFAULT_CONFIG };
+
 export default {
   isDevEnvironment,
   getConfig,
@@ -148,7 +126,8 @@ export default {
   updateEnvironmentFromUrl,
   getCachedApiBaseUrl,
   getCachedEnvironment,
+  getClientUrl,
   initializeFromStorage,
   saveToStorage,
-  CONFIG
+  CONFIG,
 };

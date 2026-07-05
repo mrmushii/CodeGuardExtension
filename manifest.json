@@ -16,8 +16,6 @@
   ],
 
   "host_permissions": [
-    "http://localhost:3000/*",
-    "https://codeguardserverside.onrender.com/*",
     "<all_urls>"
   ],
 
@@ -26,17 +24,19 @@
     "type": "module"
   },
 
+  "options_page": "options.html",
+
   "content_scripts": [
     {
       "matches": [
-        "http://localhost:5173/*",
-        "https://code-guard-six.vercel.app/*"
+        "http://*/*",
+        "https://*/*"
       ],
       "js": ["content.js"]
     }
   ],
 
   "action": {
-    "default_title": "Code-Guard Proctor is active."
+    "default_title": "Code-Guard Proctor — click to configure server URL."
   }
 }
