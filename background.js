@@ -121,9 +121,14 @@ async function sendFlagWithRetry(payload, retryIndex = 0) {
     });
     
     if (!response.ok) {
+      // 401 = expired/missing token; retrying won't help. Keep the flag queued
+      // and wait for a fresh SET_TOKEN from the page to flush the queue.
+      if (response.status === 401) {
+        return { success: false, authError: true, error: 'HTTP 401' };
+      }
       throw new Error(`HTTP ${response.status}`);
     }
-    
+
     return { success: true };
   } catch (err) {
     // Retry with exponential backoff
@@ -253,6 +258,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("🔑 Storing auth token in local storage:", message.token ? "present" : "absent");
     chrome.storage.local.set({ token: message.token || null }, () => {
       sendResponse({ success: true, message: "Token stored successfully" });
+      // Fresh token may unblock 401-queued flags — flush the offline queue
+      if (message.token && flagQueue.length > 0) {
+        setTimeout(() => syncQueuedFlags(), 500);
+      }
     });
     return true; // Keep message channel open for async response
   }
@@ -1107,8 +1116,9 @@ async function handleFlaggedSite(tabId, blockedUrl) {
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`❌ Flag report failed (${response.status}):`, errorText);
-        // Queue for retry if server error (5xx)
-        if (response.status >= 500) {
+        // Queue for retry on server error (5xx) or expired token (401 —
+        // flushed when the page posts a fresh SET_TOKEN)
+        if (response.status >= 500 || response.status === 401) {
           await queueFlag(payload);
         }
         return;
