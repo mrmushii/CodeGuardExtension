@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeGuard Proctor — Settings</title>
+  <style>
+    :root { --indigo: #4f46e5; --indigo-600: #4338ca; --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0; --text: #0f172a; --muted: #64748b; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; background: var(--bg); color: var(--text); padding: 32px; }
+    .wrap { max-width: 520px; margin: 0 auto; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .brand-dot { width: 34px; height: 34px; border-radius: 8px; background: var(--indigo); color: #fff; display: grid; place-items: center; font-weight: 800; }
+    h1 { font-size: 20px; margin: 0; }
+    p.sub { color: var(--muted); margin: 6px 0 24px; font-size: 14px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+    label { display: block; font-weight: 600; font-size: 14px; margin: 16px 0 6px; }
+    label:first-of-type { margin-top: 0; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+    input:focus { outline: 2px solid var(--indigo); border-color: var(--indigo); }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    button { margin-top: 24px; width: 100%; background: var(--indigo); color: #fff; border: 0; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    button:hover { background: var(--indigo-600); }
+    .status { margin-top: 14px; text-align: center; font-size: 14px; min-height: 20px; }
+    .status.ok { color: #059669; }
+    .status.err { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <div class="brand-dot">CG</div>
+      <h1>CodeGuard Proctor</h1>
+    </div>
+    <p class="sub">Point the extension at your exam server. For a lab / LAN exam, use the server machine's IP (e.g. <code>http://192.168.1.50:3000</code>).</p>
+    <div class="card">
+      <label for="serverUrl">Server URL (API &amp; Socket)</label>
+      <input id="serverUrl" type="url" placeholder="http://localhost:3000" />
+      <div class="hint">Backend base URL. No trailing slash.</div>
+
+      <label for="clientUrl">Client URL (web app)</label>
+      <input id="clientUrl" type="url" placeholder="http://localhost:5173" />
+      <div class="hint">The CodeGuard web app origin students open.</div>
+
+      <button id="save">Save settings</button>
+      <div id="status" class="status"></div>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>

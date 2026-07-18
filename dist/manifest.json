@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Code-Guard Proctor",
+  "version": "1.5.0",
+  "description": "Monitors and reports student browsing activity during Code-Guard exams. Includes screen recording for integrity verification.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "unlimitedStorage",
+    "alarms",
+    "desktopCapture",
+    "offscreen",
+    "downloads",
+    "tabCapture"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker-loader.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "js": [
+        "assets/content.js-loader-CTEu5n9x.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "Code-Guard Proctor — click to configure server URL."
+  },
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "resources": [
+        "assets/content-CbDoxAAJ.js",
+        "assets/content.js-DQYsJrg6.js"
+      ],
+      "use_dynamic_url": false
+    }
+  ]
+}
