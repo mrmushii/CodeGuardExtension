@@ -9,12 +9,13 @@
  */
 
 // Import configuration module for dynamic environment detection
-import { 
-  getCachedApiBaseUrl, 
-  updateEnvironmentFromUrl, 
+import {
+  getCachedApiBaseUrl,
+  updateEnvironmentFromUrl,
+  setConfiguredUrls,
   initializeFromStorage,
   saveToStorage,
-  CONFIG 
+  CONFIG
 } from './config.js';
 
 // Import recording manager (ES6 module - requires "type": "module" in manifest)
@@ -215,6 +216,86 @@ function getApiBaseUrl() {
   return getCachedApiBaseUrl();
 }
 
+// ========== AUTO-CONFIG (learn Server URL from the web page) ==========
+// content.js runs on ALL origins, so any site can post SET_CONFIG. The gate
+// below makes that safe: never change mid-exam, honor a manual Options lock,
+// and only commit a new server after probing /health for the CodeGuard marker.
+function normalizeUrl(u) {
+  if (typeof u !== 'string') return null;
+  const trimmed = u.trim().replace(/\/$/, '');
+  try {
+    const parsed = new URL(trimmed);
+    if (!/^https?:$/.test(parsed.protocol)) return null;
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
+// Probe a candidate server to confirm it is a real CodeGuard backend.
+async function isCodeGuardServer(serverUrl) {
+  try {
+    const res = await fetch(`${serverUrl}/health`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!res.ok) return false;
+    const data = await res.json().catch(() => ({}));
+    return data && data.service === 'codeguard';
+  } catch {
+    return false;
+  }
+}
+
+async function handleSetConfig(message) {
+  const serverUrl = normalizeUrl(message.serverUrl);
+  const clientUrl = normalizeUrl(message.clientUrl);
+  if (!serverUrl) {
+    return { success: false, message: 'Invalid serverUrl' };
+  }
+
+  const { examActive, configLocked, serverUrl: currentServer } =
+    await chrome.storage.local.get(['examActive', 'configLocked', 'serverUrl']);
+
+  // Gate 1: never swap servers mid-exam.
+  if (examActive === true) {
+    console.log('🔒 SET_CONFIG ignored — exam active');
+    return { success: false, message: 'Exam active — config change refused' };
+  }
+
+  // Gate 2: a proctor's manual Options entry wins.
+  if (configLocked === true) {
+    console.log('🔒 SET_CONFIG ignored — config locked by Options');
+    return { success: false, message: 'Config locked' };
+  }
+
+  // No change → nothing to do (avoids a needless /health round-trip).
+  if (currentServer === serverUrl) {
+    if (clientUrl) { setConfiguredUrls({ clientUrl }); await saveToStorage(); }
+    return { success: true, message: 'Config unchanged' };
+  }
+
+  // Gate 3: verify the candidate before trusting it.
+  const verified = await isCodeGuardServer(serverUrl);
+  if (!verified) {
+    console.warn(`⚠️ SET_CONFIG rejected — ${serverUrl}/health is not a CodeGuard server`);
+    return { success: false, message: 'Server verification failed' };
+  }
+
+  setConfiguredUrls({ serverUrl, clientUrl });
+  await saveToStorage();
+
+  // Surface the learned server so a proctor can spot a wrong target.
+  try {
+    const host = new URL(serverUrl).host;
+    chrome.action.setTitle({ title: `Code-Guard Proctor — server: ${host}` });
+  } catch { /* ignore */ }
+
+  console.log(`✅ Auto-config: server learned from page → ${serverUrl}`);
+  return { success: true, message: 'Config updated', serverUrl };
+}
+// ======================================================================
+
 async function getAuthHeaders(customHeaders = {}) {
   const data = await chrome.storage.local.get("token");
   const headers = { ...customHeaders };
@@ -254,6 +335,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   // ==============================================
   
+  if (message.type === "SET_CONFIG") {
+    handleSetConfig(message).then(sendResponse);
+    return true; // async response
+  }
+
   if (message.type === "SET_TOKEN") {
     console.log("🔑 Storing auth token in local storage:", message.token ? "present" : "absent");
     chrome.storage.local.set({ token: message.token || null }, () => {

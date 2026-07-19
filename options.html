@@ -19,6 +19,8 @@
     input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
     input:focus { outline: 2px solid var(--indigo); border-color: var(--indigo); }
     .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .lock-row { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; margin: 20px 0 0; cursor: pointer; }
+    .lock-row input { width: auto; margin: 0; }
     button { margin-top: 24px; width: 100%; background: var(--indigo); color: #fff; border: 0; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
     button:hover { background: var(--indigo-600); }
     .status { margin-top: 14px; text-align: center; font-size: 14px; min-height: 20px; }
@@ -41,6 +43,12 @@
       <label for="clientUrl">Client URL (web app)</label>
       <input id="clientUrl" type="url" placeholder="http://localhost:5173" />
       <div class="hint">The CodeGuard web app origin students open.</div>
+
+      <label class="lock-row" for="configLocked">
+        <input id="configLocked" type="checkbox" />
+        <span>Lock these settings (ignore auto-config from the web page)</span>
+      </label>
+      <div class="hint">Leave unchecked to let the extension learn the Server URL automatically when a student opens the exam page.</div>
 
       <button id="save">Save settings</button>
       <div id="status" class="status"></div>

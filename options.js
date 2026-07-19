@@ -17,9 +17,10 @@ function setStatus(msg, ok = true) {
 }
 
 async function load() {
-  const stored = await chrome.storage.local.get(["serverUrl", "clientUrl", "apiBaseUrl"]);
+  const stored = await chrome.storage.local.get(["serverUrl", "clientUrl", "apiBaseUrl", "configLocked"]);
   $("serverUrl").value = stored.serverUrl || stored.apiBaseUrl || DEFAULTS.serverUrl;
   $("clientUrl").value = stored.clientUrl || DEFAULTS.clientUrl;
+  $("configLocked").checked = stored.configLocked === true;
 }
 
 async function save() {
@@ -41,6 +42,7 @@ async function save() {
     serverUrl,
     clientUrl,
     apiBaseUrl: serverUrl, // legacy key kept in sync
+    configLocked: $("configLocked").checked, // when true, page auto-config is ignored
   });
   setStatus("✓ Saved. Reopen the exam tab to apply.", true);
 }

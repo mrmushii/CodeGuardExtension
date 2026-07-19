@@ -72,6 +72,16 @@ export function getClientUrl() {
   return storedClientUrl;
 }
 
+/**
+ * Commit Server/Client URLs learned from the web page (auto-config).
+ * Updates the in-memory cache; callers persist via saveToStorage().
+ */
+export function setConfiguredUrls({ serverUrl, clientUrl } = {}) {
+  if (serverUrl) cachedApiBaseUrl = serverUrl;
+  if (clientUrl) storedClientUrl = clientUrl;
+  cachedEnvironment = 'configured';
+}
+
 // ========== Storage (proctor-configured URLs) ==========
 
 /**
@@ -127,6 +137,7 @@ export default {
   getCachedApiBaseUrl,
   getCachedEnvironment,
   getClientUrl,
+  setConfiguredUrls,
   initializeFromStorage,
   saveToStorage,
   CONFIG,

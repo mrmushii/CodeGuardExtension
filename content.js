@@ -145,10 +145,41 @@ window.addEventListener("message", (event) => {
     const message = event.data.message;
     if (message && message.type === "PING") {
       console.log("🏓 Received PING, responding with PONG");
+      // The PING may carry the page's Server URL — treat it as auto-config too.
+      if (message.serverUrl) {
+        safeSendMessage({
+          type: "SET_CONFIG",
+          serverUrl: message.serverUrl,
+          clientUrl: event.origin
+        });
+      }
       window.postMessage({
         target: "CODEGUARD_WEB_APP",
         type: "PONG"
       }, window.location.origin);
+      return;
+    }
+
+    // Handle SET_CONFIG directly (auto-config: the page advertises its Server URL
+    // so proctors don't have to type it into Options on every lab machine).
+    // clientUrl is taken from event.origin here — the trusted page origin — not
+    // from the page payload, so a page can only claim its own origin.
+    if (message && message.type === "SET_CONFIG") {
+      console.log("⚙️ Received SET_CONFIG from page, forwarding to background...");
+      safeSendMessage(
+        {
+          type: "SET_CONFIG",
+          serverUrl: message.serverUrl,
+          clientUrl: event.origin
+        },
+        (result) => {
+          if (result.success) {
+            console.log("⚙️ Config forwarded to background:", result.response);
+          } else {
+            console.warn("⚠️ Config forward failed:", result.error);
+          }
+        }
+      );
       return;
     }
 
