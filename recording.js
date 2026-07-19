@@ -306,7 +306,61 @@ class RecordingManager {
     
     await this.saveChunk(chunkData, blob);
     this.chunkMetadata.push(chunkData);
-    
+
+    return chunkData;
+  }
+
+  // Append a live streaming chunk (the ~30s segments the page's MediaRecorder
+  // sends as VIDEO_CHUNK). Auto-indexes and derives real timestamps so the
+  // on-demand upload/fetch + flagged-auto-upload paths have chunks to work with.
+  async appendLiveChunk(blob) {
+    await this.openDB();
+
+    // Recover ids if the service worker restarted mid-exam.
+    if (!this.examRoomId || !this.studentId) {
+      try {
+        const stored = await chrome.storage.local.get(['roomId', 'studentId']);
+        this.examRoomId = this.examRoomId || stored.roomId;
+        this.studentId = this.studentId || stored.studentId;
+      } catch (err) {
+        console.warn('⚠️ appendLiveChunk: could not restore ids:', err.message);
+      }
+    }
+    if (!this.examRoomId) {
+      console.warn('⚠️ appendLiveChunk: no active exam room, dropping chunk');
+      return null;
+    }
+    if (!this.examStartTime) this.examStartTime = Date.now();
+
+    const chunkIndex = this.chunkMetadata.length;
+    const prev = this.chunkMetadata[chunkIndex - 1];
+    const startTime = chunkIndex === 0
+      ? this.examStartTime
+      : (prev?.endTime ?? this.examStartTime);
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+
+    // Events within this chunk's real time window (relative to exam start).
+    const startOffset = startTime - this.examStartTime;
+    const endOffset = endTime - this.examStartTime;
+    const chunkEvents = this.events.filter(
+      e => e.timestamp >= startOffset && e.timestamp < endOffset
+    );
+
+    const chunkData = {
+      chunkId: `${this.examRoomId}_${this.studentId}_${chunkIndex}`,
+      chunkIndex,
+      roomId: this.examRoomId,
+      studentId: this.studentId,
+      startTime,
+      endTime,
+      duration,
+      status: 'stored',
+      events: chunkEvents
+    };
+
+    await this.saveChunk(chunkData, blob);
+    this.chunkMetadata.push(chunkData);
     return chunkData;
   }
 

@@ -216,6 +216,59 @@ function getApiBaseUrl() {
   return getCachedApiBaseUrl();
 }
 
+// ========== RECORDING UPLOAD (shared by examiner-request + flagged auto-upload) ==========
+// Upload one stored chunk to the (LAN-aware) API and mark it uploaded locally.
+async function uploadChunkRecord(chunk, requestId = '') {
+  const formData = new FormData();
+  formData.append('recording', chunk.blob, `chunk_${chunk.chunkIndex}.webm`);
+  formData.append('roomId', chunk.roomId);
+  formData.append('studentId', chunk.studentId);
+  formData.append('chunkIndex', chunk.chunkIndex.toString());
+  formData.append('startTime', chunk.startTime);
+  formData.append('endTime', chunk.endTime);
+  formData.append('duration', chunk.duration.toString());
+  formData.append('events', JSON.stringify(chunk.events || []));
+  formData.append('requestId', requestId || '');
+
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${getApiBaseUrl()}/api/recordings/upload`, {
+    method: 'POST',
+    headers,
+    body: formData
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Upload failed: ${response.status} - ${errorText}`);
+  }
+  const result = await response.json();
+  await recordingManager.markChunkUploaded(chunk.chunkId, result.url);
+  return result;
+}
+
+// On a violation flag, auto-upload the most-recent stored recording chunk so
+// flagged evidence always reaches the server even if no examiner requested it
+// (owner policy: "auto-upload only flagged"). Preserved from cleanup once
+// uploaded. Best-effort — never throws into the flag path.
+async function autoUploadRecordingForFlag() {
+  try {
+    const { examActive, roomId } = await chrome.storage.local.get(['examActive', 'roomId']);
+    if (!examActive) return;
+    const rid = recordingManager.examRoomId || roomId;
+    if (!rid) return;
+
+    const chunks = await recordingManager.getChunksByRoom(rid); // sorted by chunkIndex
+    const pending = chunks.filter(c => c.status !== 'uploaded' && c.blob);
+    if (pending.length === 0) return;
+
+    const latest = pending[pending.length - 1];
+    await recordingManager.updateChunkStatus(latest.chunkId, 'uploading');
+    await uploadChunkRecord(latest, `flag_${Date.now()}`);
+    console.log(`⬆️ Flagged evidence auto-uploaded: chunk ${latest.chunkIndex}`);
+  } catch (err) {
+    console.warn('⚠️ Flag auto-upload failed:', err.message);
+  }
+}
+
 // ========== AUTO-CONFIG (learn Server URL from the web page) ==========
 // content.js runs on ALL origins, so any site can post SET_CONFIG. The gate
 // below makes that safe: never change mid-exam, honor a manual Options lock,
@@ -553,24 +606,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     (async () => {
       try {
-        // Stop screen recorder (saves to Downloads)
-        const result = await screenRecorder.stopRecording();
-        
-        // Also stop the old recording manager for event tracking
+        // Resolve the room (memory first, storage fallback after SW restart).
+        const roomId = recordingManager.examRoomId
+          || (await chrome.storage.local.get(['roomId'])).roomId;
+
+        // Save the single local copy to Downloads by merging the stored chunks
+        // (no separate in-RAM buffer — chunks already live in IndexedDB).
+        let saveResult = { success: false, error: 'No data' };
+        if (roomId) {
+          const chunks = await recordingManager.getChunksByRoom(roomId);
+          const blobs = chunks.map(c => c.blob).filter(Boolean);
+          if (blobs.length > 0) {
+            saveResult = await screenRecorder.saveMergedBlobs(blobs);
+          }
+        }
+
+        // Update lifecycle state + event metadata.
+        await screenRecorder.stopRecording();
         await recordingManager.stopRecording();
-        
-        console.log("⏹️ Recording stopped and saved to Downloads:", result);
-        sendResponse(result);
-        
+
+        // Delete non-flagged / unrequested chunks after the grace period;
+        // flagged (uploaded) chunks are preserved.
+        if (roomId) recordingManager.scheduleCleanup(roomId);
+
+        console.log("⏹️ Recording stopped; local copy:", saveResult.filename || saveResult.error);
+        sendResponse({ success: true, ...saveResult });
+
       } catch (error) {
         console.error("❌ Failed to stop recording:", error);
         sendResponse({ success: false, error: error.message });
       }
     })();
-    
+
     return true;
   }
-  
+
   if (message.type === "GET_RECORDING_STATUS") {
     console.log("📊 GET_RECORDING_STATUS received");
     
@@ -602,10 +672,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Convert base64 back to blob
         const response = await fetch(message.dataUrl);
         const blob = await response.blob();
-        
-        // Process the chunk
-        await screenRecorder.processVideoChunk(blob);
-        
+
+        // Persist to IndexedDB so the examiner's on-demand fetch and the
+        // flagged auto-upload have real chunks; the single local Downloads copy
+        // is merged from these same chunks at STOP_SCREEN_RECORDING.
+        await recordingManager.appendLiveChunk(blob);
+
         sendResponse({ success: true });
       } catch (error) {
         console.error("❌ Failed to process video chunk:", error);
@@ -674,6 +746,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         
         const result = await response.json();
         console.log(`✅ Paste violation reported:`, result.message || result);
+
+        // Flagged evidence: auto-upload the current recording chunk over LAN.
+        autoUploadRecordingForFlag();
+
         sendResponse({ success: true, message: "Paste violation reported successfully" });
       } catch (error) {
         console.error("❌ Error handling paste violation:", error);
@@ -786,39 +862,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const chunk = await recordingManager.getChunkForUpload(message.chunkIndex);
-        
-        // Create FormData for upload
-        const formData = new FormData();
-        formData.append('recording', chunk.blob, `chunk_${chunk.chunkIndex}.webm`);
-        formData.append('roomId', chunk.roomId);
-        formData.append('studentId', chunk.studentId);
-        formData.append('chunkIndex', chunk.chunkIndex.toString());
-        formData.append('startTime', chunk.startTime);
-        formData.append('endTime', chunk.endTime);
-        formData.append('duration', chunk.duration.toString());
-        formData.append('events', JSON.stringify(chunk.events || []));
-        formData.append('requestId', message.requestId || '');
-        
+
         console.log(`📤 Uploading chunk ${chunk.chunkIndex} (${(chunk.sizeBytes / 1024 / 1024).toFixed(2)} MB)...`);
-        
-        // Upload to server
-        const headers = await getAuthHeaders();
-        const response = await fetch(`${getApiBaseUrl()}/api/recordings/upload`, {
-          method: 'POST',
-          headers: headers,
-          body: formData
-        });
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Upload failed: ${response.status} - ${errorText}`);
-        }
-        
-        const result = await response.json();
-        
-        // Mark chunk as uploaded in IndexedDB
-        await recordingManager.markChunkUploaded(chunk.chunkId, result.url);
-        
+
+        // Upload + mark-uploaded via the shared helper (also used by flag auto-upload).
+        const result = await uploadChunkRecord(chunk, message.requestId);
+
         console.log(`✅ Chunk ${chunk.chunkIndex} uploaded successfully:`, result.url);
         sendResponse({ success: true, ...result, chunkId: chunk.chunkId });
       } catch (error) {
@@ -1212,7 +1261,10 @@ async function handleFlaggedSite(tabId, blockedUrl) {
 
       const result = await response.json();
       console.log(`✅ [${timestamp}] Flag report sent:`, result.message || result);
-      
+
+      // Flagged evidence: auto-upload the current recording chunk over LAN.
+      autoUploadRecordingForFlag();
+
       // Try to sync any queued flags since we're online
       if (flagQueue.length > 0) {
         setTimeout(() => syncQueuedFlags(), 1000);

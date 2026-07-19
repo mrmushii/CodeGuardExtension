@@ -112,6 +112,20 @@ class ScreenRecorder {
   }
 
   /**
+   * Save a caller-supplied set of blobs (merged, in order) to Downloads.
+   * Used by the consolidated flow: the durable local copy is built from the
+   * chunks already persisted in RecordingManager's IndexedDB, so we no longer
+   * hold the whole recording in memory during the exam.
+   */
+  async saveMergedBlobs(blobs) {
+    if (!blobs || blobs.length === 0) {
+      return { success: false, error: 'No data' };
+    }
+    this.recordedBlobs = blobs;
+    return this.saveRecording();
+  }
+
+  /**
    * Save the recording to Downloads folder
    */
   async saveRecording() {
